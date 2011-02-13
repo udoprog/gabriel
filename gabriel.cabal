@@ -51,11 +51,20 @@ Cabal-version:       >=1.2
 
 Executable gabriel
   -- .hs or .lhs file containing the Main module.
-  Main-is: src/Main.hs
+  Main-is: Gabriel/Main.hs
   
   -- Packages needed in order to build this package.
-  -- Build-depends:       
+  Build-Depends: base >= 3 && < 5
+  Build-Depends: stm >= 2 && < 3
+  Build-Depends: old-time
+  Build-Depends: old-locale
+  Build-Depends: process > 1
+  Build-Depends: directory > 1
+  Build-Depends: unix > 1
+  Build-Depends: hsyslog > 1
+  Build-Depends: hdaemonize >= 0.4.4
   
+  Ghc-Options: -threaded
   -- Modules not exported by this package.
   -- Other-modules:       
   

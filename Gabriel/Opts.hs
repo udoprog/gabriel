@@ -9,6 +9,7 @@ data Options = Options
  , optStderr      :: Maybe FilePath
  , optPidfile     :: Maybe FilePath
  , optCwd         :: Maybe FilePath
+ , optName        :: Maybe String
  , optRestart     :: Int
  } deriving Show
 
@@ -19,6 +20,7 @@ defaultOptions    = Options
  , optStderr      = Nothing
  , optPidfile     = Nothing
  , optCwd         = Nothing
+ , optName        = Nothing
  , optRestart     = 5
  }
 
@@ -43,6 +45,9 @@ options =
  , Option []     ["restart"]
      (ReqArg ((\ f opts -> opts { optRestart = read f })) "<seconds>")
      "Time to wait before restarting the process"
+ , Option []     ["name"]
+     (ReqArg ((\ f opts -> opts { optName = Just f })) "<name>")
+     "Name of process to log to syslog"
  {-, Option ['o']     ["output"]-}
      {-(OptArg ((\ f opts -> opts { optOutput = Just f }) . fromMaybe "output")-}
              {-"FILE")-}

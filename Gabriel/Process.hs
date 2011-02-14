@@ -1,10 +1,8 @@
 module Gabriel.Process (setupProcess, checkProcess) where
 
 import Control.Concurrent (threadDelay, forkIO, mergeIO)
-import Control.Concurrent.STM (atomically)
-import Control.Concurrent.STM.TVar (newTVar, writeTVar, readTVar, TVar)
 import System.IO (writeFile, openFile, hPutStr, IOMode(..), stdout, stderr, Handle)
-import System.Process (waitForProcess, terminateProcess, createProcess, StdStream(..), CreateProcess(..), proc, ProcessHandle)
+import System.Process (waitForProcess, terminateProcess, createProcess, StdStream(..), CreateProcess(..), proc)
 import System.Directory (removeFile, doesFileExist)
 import System.Exit (ExitCode(..))
 import System.Posix.Syslog (syslog, withSyslog, Facility(USER), Priority(Notice, Warning), Option(PID, PERROR))
@@ -16,12 +14,13 @@ import System.Posix.Process (getProcessID)
 import System.Posix.Signals (sigKILL, sigINT, sigTERM, installHandler, Handler(..))
 
 import Gabriel.Opts
+import Gabriel.ProcessState
 
-handleSig :: Options -> TVar (Maybe ProcessHandle) -> TVar Bool -> IO ()
-handleSig opts processVar termVar = do
-  atomically $ writeTVar termVar True
+handleSig :: Options -> ProcessState -> IO ()
+handleSig opts state = do
+  writeTerminate state True
 
-  process <- atomically $ readTVar processVar
+  process <- readProcessHandle state
 
   case process of
     Nothing -> do
@@ -66,12 +65,11 @@ showProcess array delim = showProcess' array delim 0
     showProcess' (h:t) delim d = h ++ delim ++ (showProcess' t delim (d + 1))
 
 setupProcess :: Options -> [String] -> IO ()
-setupProcess opts args =
-  withSyslog ("gabriel[" ++ (showProcess args " ") ++ "]") [PID, PERROR] USER $ do
-    let pidfile = fromJust $ optPidfile opts
-
-    termVar     <- atomically $ newTVar False
-    processVar  <- atomically $ newTVar Nothing
+setupProcess opts args = do
+  withSyslog ("gabriel[" ++ processName ++ "]") [PID, PERROR] USER $ do
+    state <- newProcessState
+    {-termVar     <- atomically $ newTVar False-}
+    {-processVar  <- atomically $ newTVar Nothing-}
 
     pid <- getProcessID
 
@@ -79,20 +77,26 @@ setupProcess opts args =
 
     syslog Notice "Installing Handlers"
 
-    installHandler sigTERM (CatchOnce $ handleSig opts processVar termVar) Nothing
-    installHandler sigINT  (CatchOnce $ handleSig opts processVar termVar) Nothing
+    installHandler sigTERM (CatchOnce $ handleSig opts state) Nothing
+    installHandler sigINT  (CatchOnce $ handleSig opts state) Nothing
 
-    handle <- runProcess opts args processVar termVar False Nothing
+    handle <- runProcess opts args state False Nothing
     
     exists <- doesFileExist pidfile
     when exists $ removeFile pidfile
+
+  where
+    processName = case (optName opts) of
+      Nothing -> showProcess args " "
+      Just n  -> n
+    pidfile = fromJust $ optPidfile opts
     
-runProcess :: Options -> [String] -> TVar (Maybe ProcessHandle) -> TVar Bool -> Bool -> Maybe Handle -> IO Handle
-runProcess opts args processVar termVar True (Just pipe) = do
+runProcess :: Options -> [String] -> ProcessState -> Bool -> Maybe Handle -> IO Handle
+runProcess opts args state True (Just pipe) = do
   syslog Notice $ "Shutting Down"
   return pipe
 
-runProcess opts args processVar termVar False handle = do
+runProcess opts args state False handle = do
   (out, err) <- setupFiles opts
 
   syslog Notice $ "STARTING " ++ (showProcess args " ")
@@ -105,22 +109,22 @@ runProcess opts args processVar termVar False handle = do
     close_fds = False
   }
 
-  atomically $ writeTVar processVar (Just p)
+  writeProcessHandle state (Just p)
 
   exitCode <- waitForProcess p
 
-  atomically $ writeTVar processVar Nothing
+  writeProcessHandle state Nothing
 
   syslog Notice $ "EXITED " ++ (show exitCode)
 
-  terminate <- atomically $ readTVar termVar
+  terminate <- readTerminate state
 
   if (not terminate && delayTime > 0) then do
       delay'
-      terminate <- atomically $ readTVar termVar
-      runProcess opts args processVar termVar terminate (Just pipe)
+      terminate <- readTerminate state
+      runProcess opts args state terminate (Just pipe)
     else do
-      runProcess opts args processVar termVar terminate (Just pipe)
+      runProcess opts args state terminate (Just pipe)
 
   where
     delayTime = optRestart opts

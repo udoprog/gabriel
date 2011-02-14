@@ -1,16 +1,16 @@
-module Gabriel.Process (setupProcess) where
+module Gabriel.Process (setupProcess, checkProcess) where
 
 import Control.Concurrent (threadDelay, forkIO, mergeIO)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (newTVar, writeTVar, readTVar, TVar)
-import System.IO (writeFile, openFile, hClose, IOMode(..), stdout, stderr, Handle)
+import System.IO (writeFile, openFile, hPutStr, IOMode(..), stdout, stderr, Handle)
 import System.Process (waitForProcess, terminateProcess, createProcess, StdStream(..), CreateProcess(..), proc, ProcessHandle)
-import System.Directory (removeFile)
+import System.Directory (removeFile, doesFileExist)
 import System.Exit (ExitCode(..))
 import System.Posix.Syslog (syslog, withSyslog, Facility(USER), Priority(Notice, Warning), Option(PID, PERROR))
 
 import Control.Monad (when)
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, isNothing)
 
 import System.Posix.Process (getProcessID)
 import System.Posix.Signals (sigKILL, sigINT, sigTERM, installHandler, Handler(..))
@@ -30,37 +30,79 @@ handleSig opts processVar termVar = do
       syslog Warning "Caught Signal, Terminating child process"
       terminateProcess p
 
-setupProcess :: Options -> [String] -> FilePath -> IO ()
-setupProcess opts args pidfile = withSyslog "gabriel" [PID, PERROR] USER $ do
-  termVar     <- atomically $ newTVar False
-  processVar  <- atomically $ newTVar Nothing
+{-
+ - Check if initialization of the process works correctly
+ -
+ - This will check that
+ -}
+checkProcess :: Options -> [String] -> IO ()
+checkProcess opts args = do
+  when
+    (isNothing $ optStderr opts)
+    (ioError (userError "Missing required option '--stderr', type '--help'"))
 
-  pid <- getProcessID
+  when
+    (isNothing $ optStdout opts)
+    (ioError (userError "Missing required option '--stderr', type '--help'"))
 
-  writeFile pidfile (show pid)
+  when
+    (isNothing $ optPidfile opts)
+    (ioError (userError "Missing required option '--pidfile', type '--help'"))
 
-  syslog Notice "Installing Handlers"
+  when ((length args) < 1) $ ioError $ userError "Too few arguments, requires program after '--'"
 
-  installHandler sigTERM (CatchOnce $ handleSig opts processVar termVar) Nothing
-  installHandler sigINT  (CatchOnce $ handleSig opts processVar termVar) Nothing
+  pidfileExists <- doesFileExist pidfile
+  when pidfileExists $ ioError (userError $ "Pid file exists " ++ (show pidfile))
+  where
+    pidfile = fromJust $ optPidfile opts
 
-  runProcess opts args processVar termVar False
-  
-  removeFile pidfile
+showProcess :: [String] -> String -> String
+showProcess array delim = showProcess' array delim 0
+  where
+    showProcess' :: [String] -> String -> Int -> String
+    showProcess' [] _        _ = ""
+    showProcess' [h]   _     _ = h
+    showProcess' (h:t) delim 2 = h ++ delim ++ ".."
+    showProcess' (h:t) delim d = h ++ delim ++ (showProcess' t delim (d + 1))
 
-runProcess :: Options -> [String] -> TVar (Maybe ProcessHandle) -> TVar Bool -> Bool -> IO ()
-runProcess opts args processVar termVar True = do
+setupProcess :: Options -> [String] -> IO ()
+setupProcess opts args =
+  withSyslog ("gabriel[" ++ (showProcess args " ") ++ "]") [PID, PERROR] USER $ do
+    let pidfile = fromJust $ optPidfile opts
+
+    termVar     <- atomically $ newTVar False
+    processVar  <- atomically $ newTVar Nothing
+
+    pid <- getProcessID
+
+    writeFile pidfile (show pid)
+
+    syslog Notice "Installing Handlers"
+
+    installHandler sigTERM (CatchOnce $ handleSig opts processVar termVar) Nothing
+    installHandler sigINT  (CatchOnce $ handleSig opts processVar termVar) Nothing
+
+    handle <- runProcess opts args processVar termVar False Nothing
+    
+    exists <- doesFileExist pidfile
+    when exists $ removeFile pidfile
+    
+runProcess :: Options -> [String] -> TVar (Maybe ProcessHandle) -> TVar Bool -> Bool -> Maybe Handle -> IO Handle
+runProcess opts args processVar termVar True (Just pipe) = do
   syslog Notice $ "Shutting Down"
+  return pipe
 
-runProcess opts args processVar termVar False = do
+runProcess opts args processVar termVar False handle = do
   (out, err) <- setupFiles opts
 
-  syslog Notice $ "STARTING " ++ (show $ head args)
+  syslog Notice $ "STARTING " ++ (showProcess args " ")
 
-  (_, _, _, p) <- createProcess (proc (head args) (tail args)) {
+  (Just pipe, _, _, p) <- createProcess (proc (head args) (tail args)) {
+    std_in  = CreatePipe,
     std_out = out,
     std_err = err,
-    cwd     = optCwd opts
+    cwd     = optCwd opts,
+    close_fds = False
   }
 
   atomically $ writeTVar processVar (Just p)
@@ -73,9 +115,12 @@ runProcess opts args processVar termVar False = do
 
   terminate <- atomically $ readTVar termVar
 
-  when (not terminate && delayTime > 0) (delay')
-
-  runProcess opts args processVar termVar terminate
+  if (not terminate && delayTime > 0) then do
+      delay'
+      terminate <- atomically $ readTVar termVar
+      runProcess opts args processVar termVar terminate (Just pipe)
+    else do
+      runProcess opts args processVar termVar terminate (Just pipe)
 
   where
     delayTime = optRestart opts

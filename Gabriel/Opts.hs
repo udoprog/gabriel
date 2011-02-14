@@ -1,7 +1,6 @@
 module Gabriel.Opts (readOptions, Options(..)) where
 
 import System.Console.GetOpt
-import Data.Maybe ( fromMaybe )
 
 data Options = Options
  { optVerbose     :: Bool
@@ -62,18 +61,6 @@ readOptions argv = do
   (opts, args) <- case getOpt Permute options argv of
      (o,n,[]  ) -> return (foldl (flip id) defaultOptions o, n)
      (_,_,errs) -> ioError (userError (concat errs ++ usageInfo header options))
-
-  case (optStderr opts) of
-    Nothing -> (ioError (userError (concat ["Missing required option 'stderr'\n"] ++ usageInfo header options)))
-    _ -> return ()
-
-  case (optStdout opts) of
-    Nothing -> (ioError (userError (concat ["Missing required option 'stdout'\n"] ++ usageInfo header options)))
-    _ -> return ()
-
-  case (optPidfile opts) of
-    Nothing -> (ioError (userError (concat ["Missing required option 'pidfile'\n"] ++ usageInfo header options)))
-    _ -> return ()
 
   return (opts, args)
 

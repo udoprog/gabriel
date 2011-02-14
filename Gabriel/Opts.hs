@@ -1,6 +1,7 @@
 module Gabriel.Opts (readOptions, Options(..)) where
 
 import System.Console.GetOpt
+import System.FilePath
 
 data Options = Options
  { optVerbose     :: Bool
@@ -13,12 +14,12 @@ data Options = Options
  , optRestart     :: Int
  } deriving Show
 
-defaultOptions    = Options
+defaultOptions wd = Options
  { optVerbose     = False
  , optShowVersion = False
- , optStdout      = Nothing
- , optStderr      = Nothing
- , optPidfile     = Nothing
+ , optStdout      = Just (joinPath [wd, "out"])
+ , optStderr      = Just (joinPath [wd, "err"])
+ , optPidfile     = Just (joinPath [wd, "pid"])
  , optCwd         = Nothing
  , optName        = Nothing
  , optRestart     = 5
@@ -61,11 +62,14 @@ options =
      {-"library directory"-}
  ]
 
-readOptions :: [String] -> IO (Options, [String])
-readOptions argv = do
-  (opts, args) <- case getOpt Permute options argv of
-     (o,n,[]  ) -> return (foldl (flip id) defaultOptions o, n)
-     (_,_,errs) -> ioError (userError (concat errs ++ usageInfo header options))
+readOptions :: [String] -> FilePath -> IO (Options, [String])
+readOptions argv workingDirectory = do
+  let optsDefinition = options
+  let optsDefaults = (defaultOptions workingDirectory)
+
+  (opts, args) <- case getOpt Permute optsDefinition argv of
+     (o,n,[]  ) -> return (foldl (flip id) optsDefaults o, n)
+     (_,_,errs) -> ioError (userError (concat errs ++ usageInfo header optsDefinition))
 
   return (opts, args)
 

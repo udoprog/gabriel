@@ -63,6 +63,7 @@ Executable gabriel
   Build-Depends: unix > 1
   Build-Depends: hsyslog > 1
   Build-Depends: hdaemonize >= 0.4.4
+  Build-Depends: filepath
   
   Ghc-Options: -threaded
   -- Modules not exported by this package.

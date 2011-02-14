@@ -1,17 +1,17 @@
 module Gabriel.Process (setupProcess, checkProcess) where
 
 import Control.Concurrent (threadDelay, forkIO, mergeIO)
-import System.IO (writeFile, openFile, hPutStr, IOMode(..), stdout, stderr, Handle)
+import System.IO (writeFile, openFile, hPutStr, IOMode(..), stdout, stderr, hClose, Handle)
 import System.Process (waitForProcess, terminateProcess, createProcess, StdStream(..), CreateProcess(..), proc)
 import System.Directory (removeFile, doesFileExist)
 import System.Exit (ExitCode(..))
-import System.Posix.Syslog (syslog, withSyslog, Facility(USER), Priority(Notice, Warning), Option(PID, PERROR))
 
 import Control.Monad (when)
 import Data.Maybe (fromJust, isNothing)
 
 import System.Posix.Process (getProcessID)
 import System.Posix.Signals (sigKILL, sigINT, sigTERM, installHandler, Handler(..))
+import System.Posix.Syslog (syslog, withSyslog, Facility(USER), Priority(Notice, Warning), Option(PID, PERROR))
 
 import Gabriel.Opts
 import Gabriel.ProcessState
@@ -24,9 +24,9 @@ handleSig opts state = do
 
   case process of
     Nothing -> do
-      syslog Notice  "Caught Signal, Nu subprocess running"
+      syslog Notice "Caught Signal, Nu subprocess running"
     Just p  -> do
-      syslog Warning "Caught Signal, Terminating child process"
+      syslog Notice "Caught Signal, Terminating child process"
       terminateProcess p
 
 {-
@@ -36,20 +36,6 @@ handleSig opts state = do
  -}
 checkProcess :: Options -> [String] -> IO ()
 checkProcess opts args = do
-  when
-    (isNothing $ optStderr opts)
-    (ioError (userError "Missing required option '--stderr', type '--help'"))
-
-  when
-    (isNothing $ optStdout opts)
-    (ioError (userError "Missing required option '--stderr', type '--help'"))
-
-  when
-    (isNothing $ optPidfile opts)
-    (ioError (userError "Missing required option '--pidfile', type '--help'"))
-
-  when ((length args) < 1) $ ioError $ userError "Too few arguments, requires program after '--'"
-
   pidfileExists <- doesFileExist pidfile
   when pidfileExists $ ioError (userError $ "Pid file exists " ++ (show pidfile))
   where
@@ -75,12 +61,10 @@ setupProcess opts args = do
 
     writeFile pidfile (show pid)
 
-    syslog Notice "Installing Handlers"
-
     installHandler sigTERM (CatchOnce $ handleSig opts state) Nothing
     installHandler sigINT  (CatchOnce $ handleSig opts state) Nothing
 
-    handle <- runProcess opts args state False Nothing
+    handle <- runProcess opts args state False
     
     exists <- doesFileExist pidfile
     when exists $ removeFile pidfile
@@ -91,12 +75,12 @@ setupProcess opts args = do
       Just n  -> n
     pidfile = fromJust $ optPidfile opts
     
-runProcess :: Options -> [String] -> ProcessState -> Bool -> Maybe Handle -> IO Handle
-runProcess opts args state True (Just pipe) = do
+runProcess :: Options -> [String] -> ProcessState -> Bool -> IO ()
+runProcess opts args state True = do
   syslog Notice $ "Shutting Down"
-  return pipe
+  return ()
 
-runProcess opts args state False handle = do
+runProcess opts args state False = do
   (out, err) <- setupFiles opts
 
   syslog Notice $ "STARTING " ++ (showProcess args " ")
@@ -117,14 +101,19 @@ runProcess opts args state False handle = do
 
   syslog Notice $ "EXITED " ++ (show exitCode)
 
+  {-
+   - Needs to close this here, otherwise pipe will probably be GCed and closed.
+   -}
+  hClose pipe
+
   terminate <- readTerminate state
 
   if (not terminate && delayTime > 0) then do
       delay'
       terminate <- readTerminate state
-      runProcess opts args state terminate (Just pipe)
+      runProcess opts args state terminate
     else do
-      runProcess opts args state terminate (Just pipe)
+      runProcess opts args state terminate
 
   where
     delayTime = optRestart opts

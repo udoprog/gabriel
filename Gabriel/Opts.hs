@@ -10,6 +10,7 @@ data Options = Options
  , optStderr      :: Maybe FilePath
  , optPidfile     :: Maybe FilePath
  , optCwd         :: Maybe FilePath
+ , optCommand     :: Maybe FilePath
  , optName        :: Maybe String
  , optRestart     :: Int
  } deriving Show
@@ -20,7 +21,8 @@ defaultOptions wd = Options
  , optStdout      = Just (joinPath [wd, "out"])
  , optStderr      = Just (joinPath [wd, "err"])
  , optPidfile     = Just (joinPath [wd, "pid"])
- , optCwd         = Nothing
+ , optCommand     = Just (joinPath [wd, "command"])
+ , optCwd         = Just wd
  , optName        = Nothing
  , optRestart     = 5
  }
@@ -43,6 +45,9 @@ options =
  , Option []     ["cwd"]
      (ReqArg ((\ f opts -> opts { optCwd = Just f })) "<dir>")
      "Current working directory"
+ , Option []     ["command"]
+     (ReqArg ((\ f opts -> opts { optCommand = Just f })) "<command>")
+     "Where to store the running command"
  , Option []     ["restart"]
      (ReqArg ((\ f opts -> opts { optRestart = read f })) "<seconds>")
      "Time to wait before restarting the process"

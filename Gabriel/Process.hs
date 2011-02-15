@@ -1,7 +1,7 @@
 module Gabriel.Process (setupProcess, checkProcess) where
 
 import Control.Concurrent (threadDelay, forkIO, mergeIO)
-import System.IO (writeFile, openFile, hPutStr, IOMode(..), stdout, stderr, hClose, Handle)
+import System.IO (writeFile, openFile, hPutStrLn, hGetLine, IOMode(..), stdout, stderr, hClose, Handle)
 import System.Process (waitForProcess, terminateProcess, createProcess, StdStream(..), CreateProcess(..), proc)
 import System.Directory (removeFile, doesFileExist)
 import System.Exit (ExitCode(..))
@@ -10,7 +10,7 @@ import Control.Monad (when)
 import Data.Maybe (fromJust, isNothing)
 
 import System.Posix.Process (getProcessID)
-import System.Posix.Signals (sigKILL, sigINT, sigTERM, installHandler, Handler(..))
+import System.Posix.Signals (sigKILL, sigINT, sigTERM, sigHUP, installHandler, Handler(..))
 import System.Posix.Syslog (syslog, withSyslog, Facility(USER), Priority(Notice, Warning), Option(PID, PERROR))
 
 import Gabriel.Opts
@@ -19,7 +19,10 @@ import Gabriel.ProcessState
 handleSig :: Options -> ProcessState -> IO ()
 handleSig opts state = do
   writeTerminate state True
+  handleTerminate state
 
+handleTerminate :: ProcessState -> IO ()
+handleTerminate state = do
   process <- readProcessHandle state
 
   case process of
@@ -28,6 +31,41 @@ handleSig opts state = do
     Just p  -> do
       syslog Notice "Caught Signal, Terminating child process"
       terminateProcess p
+
+handleHup :: Options -> ProcessState -> IO ()
+handleHup opts state = do
+  newCommand <- readCommand
+
+  if ((length newCommand) == 0) then do
+    syslog Notice $ "Will not reconfigure process to [" ++ (showProcess newCommand " ") ++ "]"
+    else do
+      writeProcessCommand state newCommand
+      syslog Notice $ "Reconfiguring process to [" ++ (showProcess newCommand " ") ++ "]"
+      handleTerminate state
+
+  {-process <- readProcessHandle state-}
+
+  {-case process of-}
+    {-Nothing -> do-}
+      {-syslog Notice "Caught Signal, Nu subprocess running"-}
+    {-Just p  -> do-}
+      {-syslog Notice "Caught Signal, Terminating child process"-}
+      {-terminateProcess p-}
+  where
+    commandfile = fromJust $ optCommand opts
+
+    readCommand :: IO [String]
+    readCommand = do
+      handle <- openFile commandfile ReadMode
+      readCommand' handle []
+      
+    readCommand' :: Handle -> [String] -> IO [String]
+    readCommand' handle r = do
+      line <- catch (do line <- hGetLine handle; return $ Just line) (\e -> return Nothing)
+
+      case line of
+        Nothing -> return r
+        Just l  -> readCommand' handle (r ++ [l])
 
 {-
  - Check if initialization of the process works correctly
@@ -54,17 +92,18 @@ setupProcess :: Options -> [String] -> IO ()
 setupProcess opts args = do
   withSyslog ("gabriel[" ++ processName ++ "]") [PID, PERROR] USER $ do
     state <- newProcessState
-    {-termVar     <- atomically $ newTVar False-}
-    {-processVar  <- atomically $ newTVar Nothing-}
 
     pid <- getProcessID
 
     writeFile pidfile (show pid)
+    writeCommand args
+    writeProcessCommand state args
 
     installHandler sigTERM (CatchOnce $ handleSig opts state) Nothing
     installHandler sigINT  (CatchOnce $ handleSig opts state) Nothing
+    installHandler sigHUP  (Catch $ handleHup opts state) Nothing
 
-    handle <- runProcess opts args state False
+    handle <- runProcess opts state False
     
     exists <- doesFileExist pidfile
     when exists $ removeFile pidfile
@@ -74,14 +113,29 @@ setupProcess opts args = do
       Nothing -> showProcess args " "
       Just n  -> n
     pidfile = fromJust $ optPidfile opts
+
+    commandfile = fromJust $ optCommand opts
+
+    writeCommand :: [String] -> IO ()
+    writeCommand args = do
+      handle <- openFile commandfile WriteMode
+      writeCommand' handle args
+      
+    writeCommand' :: Handle -> [String] -> IO ()
+    writeCommand' handle []    = return ()
+    writeCommand' handle (h:t) = do
+      hPutStrLn handle h
+      writeCommand' handle t
     
-runProcess :: Options -> [String] -> ProcessState -> Bool -> IO ()
-runProcess opts args state True = do
+runProcess :: Options -> ProcessState -> Bool -> IO ()
+runProcess opts state True = do
   syslog Notice $ "Shutting Down"
   return ()
 
-runProcess opts args state False = do
+runProcess opts state False = do
   (out, err) <- setupFiles opts
+
+  args <- readProcessCommand state
 
   syslog Notice $ "STARTING " ++ (showProcess args " ")
 
@@ -111,9 +165,9 @@ runProcess opts args state False = do
   if (not terminate && delayTime > 0) then do
       delay'
       terminate <- readTerminate state
-      runProcess opts args state terminate
+      runProcess opts state terminate
     else do
-      runProcess opts args state terminate
+      runProcess opts state terminate
 
   where
     delayTime = optRestart opts

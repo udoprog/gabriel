@@ -27,9 +27,9 @@ handleTerminate state = do
 
   case process of
     Nothing -> do
-      syslog Notice "Caught Signal, Nu subprocess running"
+      syslog Notice "Nu child process running"
     Just p  -> do
-      syslog Notice "Caught Signal, Terminating child process"
+      syslog Notice "Terminating child process"
       terminateProcess p
 
 handleHup :: Options -> ProcessState -> IO ()

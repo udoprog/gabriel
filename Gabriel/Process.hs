@@ -11,7 +11,7 @@ import Data.Maybe (fromJust, isNothing)
 
 import System.Posix.Process (getProcessID)
 import System.Posix.Signals (sigKILL, sigINT, sigTERM, sigHUP, installHandler, Handler(..))
-import System.Posix.Syslog (syslog, withSyslog, Facility(USER), Priority(Notice, Warning), Option(PID, PERROR))
+import System.Posix.Syslog (syslog, withSyslog, Facility(USER), Priority(Notice, Warning, Error), Option(PID, PERROR))
 
 import Gabriel.Opts
 import Gabriel.ProcessState
@@ -95,8 +95,9 @@ setupProcess opts args = do
 
     pid <- getProcessID
 
-    writeFile pidfile (show pid)
-    writeCommand args
+    catch (writeFile pidfile (show pid)) (\e -> syslog Error $ "Could not write pid to file - " ++ (show e))
+    catch (writeCommand args) (\e -> syslog Error $ "Could not write commands to file - " ++ (show e))
+    
     writeProcessCommand state args
 
     installHandler sigTERM (CatchOnce $ handleSig opts state) Nothing
@@ -180,16 +181,25 @@ runProcess opts state False = do
 
     setupFiles :: Options -> IO (StdStream, StdStream)
     setupFiles opts = do
-      outHandle <- case (optStdout opts) of
-            Just f  -> do
-              handle <- openFile f AppendMode
-              return $ UseHandle handle
-            Nothing -> return Inherit
-
-      errHandle <- case (optStderr opts) of
-            Just f  -> do
-              handle <- openFile f AppendMode
-              return $ UseHandle handle
-            Nothing -> return Inherit
+      outHandle <- safeOpenHandle "stdout" (optStdout opts)
+      errHandle <- safeOpenHandle "stderr" (optStderr opts)
 
       return (outHandle, errHandle)
+
+      where
+        safeOpenHandle :: String -> Maybe FilePath -> IO StdStream
+        safeOpenHandle name path = case path of
+          Just p -> do
+            {- Open the handle, or Nothing if an exception is raised -}
+            handle <- catch
+              (do
+                h <- openFile p AppendMode
+                return $ Just h)
+              (\e -> do
+                syslog Error $ "Failed to open handle '" ++ name ++ "'"
+                return Nothing)
+
+            case handle of
+              Just h -> return $ UseHandle h
+              Nothing -> return Inherit
+          Nothing -> return Inherit

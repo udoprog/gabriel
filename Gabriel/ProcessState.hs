@@ -8,7 +8,7 @@ module Gabriel.ProcessState( newProcessState
                            , ProcessState
 ) where
 
-import System.Process (ProcessHandle)
+import Gabriel.SubProcess
 
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (newTVar, writeTVar, readTVar, TVar)

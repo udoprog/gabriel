@@ -2,19 +2,22 @@ module Gabriel.Process (setupProcess, checkProcess) where
 
 import Control.Concurrent (threadDelay, forkIO, mergeIO)
 import System.IO (writeFile, openFile, hPutStrLn, hGetLine, IOMode(..), stdout, stderr, hClose, Handle)
-import System.Process (waitForProcess, terminateProcess, createProcess, StdStream(..), CreateProcess(..), proc)
 import System.Directory (removeFile, doesFileExist)
 import System.Exit (ExitCode(..))
 
 import Control.Monad (when)
 import Data.Maybe (fromJust, isNothing)
 
+import System.Posix.IO (openFd, defaultFileFlags, OpenMode(WriteOnly), OpenFileFlags(append), stdInput)
+import System.Posix.Files (stdFileMode)
+import System.Posix.Types (Fd)
 import System.Posix.Process (getProcessID)
-import System.Posix.Signals (sigKILL, sigINT, sigTERM, sigHUP, installHandler, Handler(..))
+import System.Posix.Signals (sigKILL, sigINT, sigTERM, sigHUP, installHandler, Handler(..), signalProcess)
 import System.Posix.Syslog (syslog, withSyslog, Facility(USER), Priority(Notice, Warning, Error), Option(PID, PERROR))
 
 import Gabriel.Opts
 import Gabriel.ProcessState
+import Gabriel.SubProcess(waitForProcess, terminateProcess, startProcess, newProcessDefinition, closeHandle, ProcessDefinition(..))
 
 handleSig :: Options -> ProcessState -> IO ()
 handleSig opts state = do
@@ -140,13 +143,13 @@ runProcess opts state False = do
 
   syslog Notice $ "STARTING " ++ (showProcess args " ")
 
-  (Just pipe, _, _, p) <- createProcess (proc (head args) (tail args)) {
-    std_in  = CreatePipe,
-    std_out = out,
-    std_err = err,
-    cwd     = optCwd opts,
-    close_fds = False
-  }
+  let def = newProcessDefinition{ std_in = Just stdInput
+                                , std_out = out
+                                , std_err = err
+                                , cwd = optCwd opts
+                                }
+
+  p <- startProcess (head args) (tail args) def
 
   writeProcessHandle state (Just p)
 
@@ -154,13 +157,13 @@ runProcess opts state False = do
 
   writeProcessHandle state Nothing
 
+  closeHandle p
+
   syslog Notice $ "EXITED " ++ (show exitCode)
 
   {-
    - Needs to close this here, otherwise pipe will probably be GCed and closed.
    -}
-  hClose pipe
-
   terminate <- readTerminate state
 
   if (not terminate && delayTime > 0) then do
@@ -179,7 +182,7 @@ runProcess opts state False = do
       syslog Notice $ "WAITING " ++ delayShow ++ " seconds";
       threadDelay delayTimeMs
 
-    setupFiles :: Options -> IO (StdStream, StdStream)
+    setupFiles :: Options -> IO (Maybe Fd, Maybe Fd)
     setupFiles opts = do
       outHandle <- safeOpenHandle "stdout" (optStdout opts)
       errHandle <- safeOpenHandle "stderr" (optStderr opts)
@@ -187,19 +190,15 @@ runProcess opts state False = do
       return (outHandle, errHandle)
 
       where
-        safeOpenHandle :: String -> Maybe FilePath -> IO StdStream
-        safeOpenHandle name path = case path of
-          Just p -> do
+        safeOpenHandle :: String -> Maybe FilePath -> IO (Maybe Fd)
+        safeOpenHandle name (Just path) = do
             {- Open the handle, or Nothing if an exception is raised -}
-            handle <- catch
-              (do
-                h <- openFile p AppendMode
-                return $ Just h)
-              (\e -> do
-                syslog Error $ "Failed to open handle '" ++ name ++ "'"
-                return Nothing)
+              catch
+                (do
+                  h <- openFd path WriteOnly (Just stdFileMode) defaultFileFlags {append = True}
+                  return $ Just h)
+                (\e -> do
+                  syslog Error $ "Failed to open handle '" ++ name ++ "'"
+                  return Nothing)
 
-            case handle of
-              Just h -> return $ UseHandle h
-              Nothing -> return Inherit
-          Nothing -> return Inherit
+        safeOpenHandle name Nothing = return Nothing

@@ -1,5 +1,6 @@
 module Gabriel.SubProcess(  startProcess
-                          , terminateProcess
+                          , signalTerminate
+                          , signalKill
                           , waitForProcess
                           , closeHandle
                           , newProcessDefinition
@@ -7,7 +8,6 @@ module Gabriel.SubProcess(  startProcess
                           , ProcessHandle
                           ) where
 
-import Control.Monad
 import System.Exit
 import System.Posix.IO
 import System.Posix.Process
@@ -45,9 +45,13 @@ executeChild exec args definition = do
 
   executeFile exec True args Nothing
 
-terminateProcess :: ProcessHandle -> IO ()
-terminateProcess handle = do
+signalTerminate :: ProcessHandle -> IO ()
+signalTerminate handle = do
   signalProcess sigTERM (processId handle)
+
+signalKill :: ProcessHandle -> IO ()
+signalKill handle = do
+  signalProcess sigKILL (processId handle)
 
 waitForProcess :: ProcessHandle -> IO ExitCode
 waitForProcess handle = do
@@ -63,7 +67,7 @@ waitForProcess handle = do
 
 startProcess :: FilePath -> [String] -> ProcessDefinition -> IO ProcessHandle
 startProcess executable arguments def = do
-  stdIn <- justOrDevNull' (std_in def) ReadOnly
+  (stdIn, w) <- justOrPipe' (std_in def)
   stdOut <- justOrDevNull' (std_out def) WriteOnly
   stdErr <- justOrDevNull' (std_err def) WriteOnly
   
@@ -82,6 +86,12 @@ startProcess executable arguments def = do
     justOrDevNull' Nothing openMode = do
       fd <- openFd "/dev/null" openMode Nothing defaultFileFlags
       return $ Just fd
+
+    justOrPipe' :: Maybe Fd -> IO (Maybe Fd, Fd)
+    justOrPipe' (Just fd) = return (Just fd, fd)
+    justOrPipe' Nothing = do
+      (r, w) <- createPipe
+      return $ (Just r, w)
 
 closeHandle :: ProcessHandle -> IO ()
 closeHandle handle = do

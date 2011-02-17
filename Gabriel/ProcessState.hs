@@ -11,6 +11,7 @@ module Gabriel.ProcessState( newProcessState
                            , acknowledgeTerminate
                            , registerTerminate
                            , ProcessState
+                           , raiseSignal
 ) where
 
 import Control.Concurrent (threadDelay)
@@ -18,7 +19,9 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, tryTakeMVar, putMVar, takeMV
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (newTVar, writeTVar, readTVar, TVar)
 
+import System.Posix.Signals (installHandler, Handler(..), signalProcess, Signal)
 import System.Process (ProcessHandle)
+import System.Process.Internals (withProcessHandle_, ProcessHandle__(OpenHandle))
 
 {-
  - shutdown:        the child and parent process (gabriel) should both terminate
@@ -91,3 +94,10 @@ readProcessCommand state = atomically $ readTVar $ processCommand state
 
 writeProcessCommand :: ProcessState -> [String] -> IO ()
 writeProcessCommand state command = atomically $ writeTVar (processCommand state) command
+
+raiseSignal :: ProcessHandle -> Signal -> IO ()
+raiseSignal handle sig =
+  withProcessHandle_ handle (\p -> case p of
+    OpenHandle pid -> do
+      signalProcess sig pid
+      return $ OpenHandle pid)

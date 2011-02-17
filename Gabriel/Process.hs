@@ -35,11 +35,13 @@ handleTerminate state = do
     Nothing -> do
       syslog Notice "Nu child process running"
     Just p  -> do
-      syslog Notice "Terminating child process"
+      syslog Notice "Terminating child process (SIGTERM)"
       signalTerminate p
       isDead <- waitForTerminate state 1000000 10
       -- if process is not dead, send a 'kill' signal
-      when (not isDead) (signalKill p)
+      when (not isDead) (do
+        syslog Notice "Killing child process (SIGKILL)"
+        signalKill p)
       acknowledgeTerminate state
 
   writeTerminate state False

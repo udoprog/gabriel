@@ -39,7 +39,7 @@ executeChild exec args definition = do
   case (cwd definition) of
     Just cwd -> changeWorkingDirectory cwd
 
-  dupTo (fromJust $ std_in definition) stdInput
+  --dupTo (fromJust $ std_in definition) stdInput
   dupTo (fromJust $ std_out definition) stdOutput
   dupTo (fromJust $ std_err definition) stdError
 
@@ -53,31 +53,26 @@ signalKill :: ProcessHandle -> IO ()
 signalKill handle = do
   signalProcess sigKILL (processId handle)
 
-waitForProcess :: ProcessHandle -> IO ExitCode
+waitForProcess :: ProcessHandle -> IO ProcessStatus
 waitForProcess handle = do
   s <- getProcessStatus True True (processId handle)
-
-  return ExitSuccess
-  {-return $ case s of-}
-      {-Nothing -> ExitFailure-}
-      {-Just s -> (case s of-}
-              {-Exited exitCode -> ExitSuccess-}
-              {-Terminated _ -> ExitFailure-}
-              {-Stopped _ -> ExitFailure)-}
+  return $ fromJust s
 
 startProcess :: FilePath -> [String] -> ProcessDefinition -> IO ProcessHandle
 startProcess executable arguments def = do
-  (stdIn, w) <- justOrPipe' (std_in def)
+  --(stdIn, w) <- justOrPipe' (std_in def)
   stdOut <- justOrDevNull' (std_out def) WriteOnly
   stdErr <- justOrDevNull' (std_err def) WriteOnly
   
-  let newDef = ProcessDefinition  { std_in  = stdIn
+  let newDef = ProcessDefinition  { std_in  = Nothing
                                   , std_out = stdOut
                                   , std_err = stdErr
                                   , cwd = cwd def
                                   }
 
-  id <- forkProcess $ executeChild executable arguments newDef
+  id <- forkProcess $ do
+    executeChild executable arguments newDef{std_in = Just stdInput}
+
   return $ ProcessHandle {processId = id, definition = newDef}
 
   where
@@ -97,7 +92,6 @@ closeHandle :: ProcessHandle -> IO ()
 closeHandle handle = do
   let def = definition handle
 
-  closeFd $ fromJust $ std_in def
   closeFd $ fromJust $ std_out def
   closeFd $ fromJust $ std_err def
 

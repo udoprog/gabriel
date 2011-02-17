@@ -26,5 +26,5 @@ main = do
       -- sanity checking of the process parameters
       checkProcess opts args
 
-      --daemonize $ setupProcess opts args
-      setupProcess opts args
+      daemonize $ setupProcess opts args
+      --setupProcess opts args

@@ -1,23 +1,22 @@
 module Gabriel.Process (setupProcess, checkProcess) where
 
 import Control.Concurrent (forkIO, mergeIO)
-import System.IO (writeFile, openFile, hPutStrLn, hGetLine, IOMode(..), stdout, stderr, hClose, Handle)
+import System.IO (writeFile, openFile, hClose, hPutStrLn, hGetLine, IOMode(..), stdout, stderr, Handle(..))
 import System.Directory (removeFile, doesFileExist)
 import System.Exit (ExitCode(..))
 
 import Control.Monad (when)
 import Data.Maybe (fromJust, isNothing)
 
-import System.Posix.IO (openFd, defaultFileFlags, OpenMode(WriteOnly), OpenFileFlags(append), stdInput)
-import System.Posix.Files (stdFileMode)
-import System.Posix.Types (Fd)
+import System.Process (createProcess, proc, CreateProcess(..), StdStream(..), ProcessHandle, waitForProcess)
+import System.Process.Internals (withProcessHandle_, ProcessHandle__(OpenHandle))
+
 import System.Posix.Process (getProcessID)
-import System.Posix.Signals (sigKILL, sigINT, sigTERM, sigHUP, installHandler, Handler(..), signalProcess)
+import System.Posix.Signals (sigKILL, sigINT, sigTERM, sigHUP, installHandler, Handler(..), signalProcess, Signal)
 import System.Posix.Syslog (syslog, withSyslog, Facility(USER), Priority(Notice, Warning, Error, Debug), Option(PID, PERROR))
 
 import Gabriel.Opts
 import Gabriel.ProcessState
-import Gabriel.SubProcess(waitForProcess, signalTerminate, signalKill, startProcess, newProcessDefinition, closeHandle, ProcessDefinition(..))
 import Gabriel.Concurrent (controlledThreadDelay)
 
 handleSig :: Options -> ProcessState -> IO ()
@@ -36,15 +35,24 @@ handleTerminate state = do
       syslog Notice "Nu child process running"
     Just p  -> do
       syslog Notice "Terminating child process (SIGTERM)"
-      signalTerminate p
+      signal p sigTERM
       isDead <- waitForTerminate state 1000000 10
       -- if process is not dead, send a 'kill' signal
       when (not isDead) (do
         syslog Notice "Killing child process (SIGKILL)"
-        signalKill p)
+        signal p sigKILL)
       acknowledgeTerminate state
 
   writeTerminate state False
+
+  where
+    signal :: ProcessHandle -> Signal -> IO ()
+    signal handle sig =
+      withProcessHandle_ handle (\p -> case p of
+        OpenHandle pid -> do
+          signalProcess sig pid
+          return $ OpenHandle pid)
+
 
 handleHup :: Options -> ProcessState -> IO ()
 handleHup opts state = do
@@ -146,12 +154,11 @@ runProcess opts state False = do
 
   syslog Notice $ "STARTING " ++ (showProcess args " ")
 
-  let def = newProcessDefinition{ std_out = out
-                                , std_err = err
-                                , cwd = optCwd opts
-                                }
-
-  p <- startProcess (head args) (tail args) def
+  (Just s, _, _, p) <- createProcess (proc (head args) (tail args))
+    { std_in  = CreatePipe
+    , std_out = out
+    , std_err = err
+    }
 
   writeProcessHandle state (Just p)
 
@@ -159,7 +166,8 @@ runProcess opts state False = do
 
   writeProcessHandle state Nothing
 
-  closeHandle p
+  {- Important to make sure stdin is not garbage collected (and closed) -}
+  hClose s
 
   syslog Notice $ "EXITED " ++ (show exitCode)
 
@@ -194,20 +202,28 @@ runProcess opts state False = do
       when (wasInterrupted) (syslog Notice "WAIT was Interrupted")
       return ()
 
-    setupFiles :: Options -> IO (Maybe Fd, Maybe Fd)
+    setupFiles :: Options -> IO (StdStream, StdStream)
     setupFiles opts = do
       outHandle <- safeOpenHandle "stdout" (optStdout opts)
       errHandle <- safeOpenHandle "stderr" (optStderr opts)
 
-      return (outHandle, errHandle)
+      outHandleS <- (case outHandle of
+        Nothing     -> return Inherit
+        Just handle -> return $ UseHandle handle)
+
+      errHandleS <- (case errHandle of
+        Nothing     -> return Inherit
+        Just handle -> return $ UseHandle handle)
+
+      return (outHandleS, errHandleS)
 
       where
-        safeOpenHandle :: String -> Maybe FilePath -> IO (Maybe Fd)
+        safeOpenHandle :: String -> Maybe FilePath -> IO (Maybe Handle)
         safeOpenHandle name (Just path) = do
             {- Open the handle, or Nothing if an exception is raised -}
               catch
                 (do
-                  h <- openFd path WriteOnly (Just stdFileMode) defaultFileFlags {append = True}
+                  h <- openFile path AppendMode
                   return $ Just h)
                 (\e -> do
                   syslog Error $ "Failed to open handle '" ++ name ++ "'"

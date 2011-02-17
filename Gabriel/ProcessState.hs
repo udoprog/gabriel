@@ -13,12 +13,12 @@ module Gabriel.ProcessState( newProcessState
                            , ProcessState
 ) where
 
-import Gabriel.SubProcess
-
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, tryTakeMVar, putMVar, takeMVar)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (newTVar, writeTVar, readTVar, TVar)
+
+import System.Process (ProcessHandle)
 
 {-
  - shutdown:        the child and parent process (gabriel) should both terminate

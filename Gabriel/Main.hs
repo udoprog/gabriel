@@ -219,6 +219,8 @@ main = do
 
   (opts, args) <- readOptions cmd workingDirectory
 
+  putStrLn (show opts)
+
   when (optShowVersion opts) (do
     putStrLn "Gabriel, the process guardian version 0.1"
     exitImmediately ExitSuccess)

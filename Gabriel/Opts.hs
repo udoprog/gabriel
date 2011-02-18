@@ -2,6 +2,9 @@ module Gabriel.Opts (readOptions, Options(..)) where
 
 import System.Console.GetOpt
 import System.FilePath
+import Data.Maybe (isNothing)
+import Control.Monad (when)
+import Data.List (find)
 
 data Options = Options
  { optVerbose     :: Bool
@@ -13,6 +16,7 @@ data Options = Options
  , optCommand     :: Maybe FilePath
  , optName        :: Maybe String
  , optRestart     :: Int
+ , optEnviron     :: [(String, String)]
  } deriving Show
 
 defaultOptions wd = Options
@@ -25,6 +29,7 @@ defaultOptions wd = Options
  , optCwd         = Just wd
  , optName        = Nothing
  , optRestart     = 5
+ , optEnviron     = []
  }
 
 options :: [OptDescr (Options -> Options)]
@@ -34,26 +39,29 @@ options =
  , Option ['V','?'] ["version"]
      (NoArg (\ opts -> opts { optShowVersion = True })) "show version number"
  , Option []     ["stdout"]
-     (ReqArg ((\ f opts -> opts { optStdout = Just f })) "<file>")
+     (ReqArg (\ f opts -> opts { optStdout = Just f }) "<file>")
      "Redirect stdout to FILE"
  , Option []     ["stderr"]
-     (ReqArg ((\ f opts -> opts { optStderr = Just f })) "<file>")
+     (ReqArg (\ f opts -> opts { optStderr = Just f }) "<file>")
      "Redirect stderr to FILE"
  , Option []     ["pidfile"]
-     (ReqArg ((\ f opts -> opts { optPidfile = Just f })) "<file>")
+     (ReqArg (\ f opts -> opts { optPidfile = Just f }) "<file>")
      "Use FILE as exclusive pidfile"
  , Option []     ["cwd"]
-     (ReqArg ((\ f opts -> opts { optCwd = Just f })) "<dir>")
+     (ReqArg (\ f opts -> opts { optCwd = Just f }) "<dir>")
      "Current working directory"
  , Option []     ["command"]
-     (ReqArg ((\ f opts -> opts { optCommand = Just f })) "<command>")
+     (ReqArg (\ f opts -> opts { optCommand = Just f }) "<command>")
      "Where to store the running command"
  , Option []     ["restart"]
-     (ReqArg ((\ f opts -> opts { optRestart = read f })) "<seconds>")
+     (ReqArg (\ f opts -> opts { optRestart = read f }) "<seconds>")
      "Time to wait before restarting the process"
  , Option []     ["name"]
-     (ReqArg ((\ f opts -> opts { optName = Just f })) "<name>")
+     (ReqArg (\ f opts -> opts { optName = Just f }) "<name>")
      "Name of process to log to syslog"
+ , Option ['E'] []
+     (ReqArg (\ f opts -> opts { optEnviron = updateEnviron (optEnviron opts) f }) "<name>=<value>")
+     "Update environment variable (can be used multiple times)"
  {-, Option ['o']     ["output"]-}
      {-(OptArg ((\ f opts -> opts { optOutput = Just f }) . fromMaybe "output")-}
              {-"FILE")-}
@@ -66,6 +74,12 @@ options =
      {-(ReqArg (\ d opts -> opts { optLibDirs = optLibDirs opts ++ [d] }) "DIR")-}
      {-"library directory"-}
  ]
+
+ where
+  updateEnviron :: [(String, String)] -> String -> [(String, String)]
+  updateEnviron old add = do
+    let pos = find (=='=') add
+    [("test", "too")]
 
 readOptions :: [String] -> FilePath -> IO (Options, [String])
 readOptions argv workingDirectory = do

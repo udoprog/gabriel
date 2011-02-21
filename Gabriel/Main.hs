@@ -11,7 +11,7 @@ import System.Posix.Directory (getWorkingDirectory)
 import System.Posix.Process (getProcessID, exitImmediately)
 import System.Exit (ExitCode(..))
 import System.FilePath.Posix (joinPath)
-import System.Directory (doesFileExist, removeFile, doesFileExist)
+import System.Directory (doesFileExist, removeFile)
 import System.IO (writeFile, openFile, hClose, hPutStrLn, hGetLine, IOMode(..), stdout, stderr, Handle(..))
 
 import Data.Maybe (isNothing, fromJust)
@@ -110,14 +110,12 @@ setupProcess opts args = do
     installHandler sigHUP  (Catch $ handleHup opts state) Nothing
 
     handle <- runProcess opts state False
-    
-    exists <- doesFileExist pidfile
-    when exists $ removeFile pidfile
 
-    socketExists <- doesFileExist socketPath
-    when socketExists $ do
-      closeSocket sock
-      removeFile socketPath
+    catch (closeSocket sock >> removeFile socketPath)
+      (\e -> syslog Error $ "Could not close and remove socket: " ++ (show e))
+    
+    catch (removeFile pidfile)
+      (\e -> syslog Error $ "Could not remove pid file: " ++ (show e))
 
   where
     processName :: Options -> [String] -> String
@@ -226,24 +224,6 @@ runProcess opts state False = do
 
         safeOpenHandle' name Nothing = return Nothing
 
-  {-putStrLn "Hello World"-}
-  {-let uc = UpdateCommand ["ls", "-alh", "wtf"]-}
-  {-let ss = unpack $ encode uc-}
-  {-putStrLn $ ss-}
-  {-putStrLn $ (show ( decode (pack ss) :: Command ) )-}
-  {-return ()-}
-
-{-main = do-}
-  {-mvar <- newEmptyMVar-}
-  {-sock <- server "/tmp/test.sock" (\packet -> putStrLn $ "got packet: " ++ (show packet))-}
-  
-  {-let uc = UpdateCommand ["ls", "-alh", "wtf"]-}
-  {-client "/tmp/test.sock" uc-}
-  {-res <- takeMVar mvar-}
-  {-putStrLn "Exiting..."-}
-  {-return ()-}
-
-
 main :: IO ()
 main = do
   cmd <- getArgs
@@ -270,5 +250,5 @@ main = do
   pidfileExists <- doesFileExist pidfile
   when pidfileExists $ ioError (userError $ "Pid file exists " ++ (show pidfile))
 
-  daemonize $ setupProcess opts args
-  --setupProcess opts args
+  --daemonize $ setupProcess opts args
+  setupProcess opts args

@@ -25,14 +25,15 @@ import Control.Concurrent (forkIO, threadDelay)
 server path handle = do
   sock <- listenOn (UnixSocket path)
 
-  forkIO $ forever $ do
+  forkIO $ catch (forever $ do
     (h, host, port) <- accept sock
 
     str <- hGetContents h
     let packet = decode str :: Command
     handle packet
 
-    hClose h
+    hClose h)
+    (\e -> return ())
 
   return sock
 

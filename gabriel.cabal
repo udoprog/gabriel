@@ -54,16 +54,18 @@ Executable gabriel
   Main-is: Gabriel/Main.hs
   
   -- Packages needed in order to build this package.
-  Build-Depends: base >= 3 && < 5
-  Build-Depends: stm >= 2 && < 3
-  Build-Depends: old-time
-  Build-Depends: old-locale
-  Build-Depends: process > 1
-  Build-Depends: directory > 1
-  Build-Depends: unix > 1
-  Build-Depends: hsyslog > 1
-  Build-Depends: hdaemonize >= 0.4.4
-  Build-Depends: filepath
+  Build-Depends:  base >= 3 && < 5,
+                  stm >= 2 && < 3,
+                  time,
+                  process,
+                  directory,
+                  unix,
+                  hsyslog,
+                  hdaemonize,
+                  filepath,
+                  ghc-binary,
+                  bytestring,
+                  network
   
   Ghc-Options: -threaded
   -- Modules not exported by this package.

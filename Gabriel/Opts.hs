@@ -9,11 +9,13 @@ import Data.List (find)
 data Options = Options
  { optVerbose     :: Bool
  , optShowVersion :: Bool
+ , optUpdate      :: Bool
  , optStdout      :: Maybe FilePath
  , optStderr      :: Maybe FilePath
  , optPidfile     :: Maybe FilePath
  , optCwd         :: Maybe FilePath
  , optCommand     :: Maybe FilePath
+ , optSocket      :: Maybe FilePath
  , optName        :: Maybe String
  , optRestart     :: Int
  , optEnviron     :: [(String, String)]
@@ -22,10 +24,12 @@ data Options = Options
 defaultOptions wd = Options
  { optVerbose     = False
  , optShowVersion = False
+ , optUpdate      = False
  , optStdout      = Just (joinPath [wd, "out"])
  , optStderr      = Just (joinPath [wd, "err"])
  , optPidfile     = Just (joinPath [wd, "pid"])
  , optCommand     = Just (joinPath [wd, "command"])
+ , optSocket      = Just (joinPath [wd, "socket"])
  , optCwd         = Just wd
  , optName        = Nothing
  , optRestart     = 5
@@ -38,6 +42,8 @@ options =
      (NoArg (\ opts -> opts { optVerbose = True })) "chatty output on stderr"
  , Option ['V','?'] ["version"]
      (NoArg (\ opts -> opts { optShowVersion = True })) "show version number"
+ , Option ['u'] ["update"]
+     (NoArg (\ opts -> opts { optUpdate = True })) "update the running command"
  , Option []     ["stdout"]
      (ReqArg (\ f opts -> opts { optStdout = Just f }) "<file>")
      "Redirect stdout to FILE"
@@ -53,6 +59,9 @@ options =
  , Option []     ["command"]
      (ReqArg (\ f opts -> opts { optCommand = Just f }) "<command>")
      "Where to store the running command"
+ , Option ['S']     ["socket"]
+     (ReqArg (\ f opts -> opts { optSocket = Just f }) "<path>")
+     "Socket to use for communication"
  , Option []     ["restart"]
      (ReqArg (\ f opts -> opts { optRestart = read f }) "<seconds>")
      "Time to wait before restarting the process"

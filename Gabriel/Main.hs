@@ -26,6 +26,11 @@ import Gabriel.Opts
 import Gabriel.ProcessState
 import Gabriel.Concurrent as C
 import Gabriel.Utils as U
+import Gabriel.Commands
+
+import Control.Concurrent (forkIO)
+import Gabriel.Server (server, client, closeSocket)
+import Control.Concurrent.MVar
 
 handleSig :: Options -> ProcessState -> IO ()
 handleSig opts state = do
@@ -91,8 +96,9 @@ setupProcess :: Options -> [String] -> IO ()
 setupProcess opts args = do
   withSyslog ("gabriel[" ++ (processName opts args) ++ "]") [PID, PERROR] USER $ do
     state <- newProcessState
-
     pid <- getProcessID
+
+    sock <- server socketPath (\packet -> syslog Notice $ "got packet: " ++ (show packet))
 
     catch (writeFile pidfile (show pid)) (\e -> syslog Error $ "Could not write pid to file - " ++ (show e))
     catch (writeCommand args) (\e -> syslog Error $ "Could not write commands to file - " ++ (show e))
@@ -108,6 +114,11 @@ setupProcess opts args = do
     exists <- doesFileExist pidfile
     when exists $ removeFile pidfile
 
+    socketExists <- doesFileExist socketPath
+    when socketExists $ do
+      closeSocket sock
+      removeFile socketPath
+
   where
     processName :: Options -> [String] -> String
     processName opts args = case (optName opts) of
@@ -116,6 +127,9 @@ setupProcess opts args = do
 
     pidfile :: FilePath
     pidfile = fromJust $ optPidfile opts
+
+    socketPath :: FilePath
+    socketPath = fromJust $ optSocket opts
 
     commandfile :: FilePath
     commandfile = fromJust $ optCommand opts
@@ -212,6 +226,24 @@ runProcess opts state False = do
 
         safeOpenHandle' name Nothing = return Nothing
 
+  {-putStrLn "Hello World"-}
+  {-let uc = UpdateCommand ["ls", "-alh", "wtf"]-}
+  {-let ss = unpack $ encode uc-}
+  {-putStrLn $ ss-}
+  {-putStrLn $ (show ( decode (pack ss) :: Command ) )-}
+  {-return ()-}
+
+{-main = do-}
+  {-mvar <- newEmptyMVar-}
+  {-sock <- server "/tmp/test.sock" (\packet -> putStrLn $ "got packet: " ++ (show packet))-}
+  
+  {-let uc = UpdateCommand ["ls", "-alh", "wtf"]-}
+  {-client "/tmp/test.sock" uc-}
+  {-res <- takeMVar mvar-}
+  {-putStrLn "Exiting..."-}
+  {-return ()-}
+
+
 main :: IO ()
 main = do
   cmd <- getArgs
@@ -227,6 +259,11 @@ main = do
 
   when ((length args) < 1) (do
     ioError $ userError "Too few arguments, requires program after '--'")
+
+  when (optUpdate opts) (do
+    let uc = UpdateCommand args
+    client (fromJust $ optSocket opts) uc
+    exitImmediately ExitSuccess)
 
   -- sanity checking of the process parameters
   let pidfile = fromJust $ optPidfile opts

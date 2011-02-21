@@ -37,6 +37,15 @@ handleSig opts state = do
   writeShutdown state True
   handleTerminate state
 
+handlePacket opts state packet = do
+  syslog Notice $ "PACKET: " ++ (show packet)
+
+  case packet of
+    KillCommand -> (do
+      writeShutdown state True
+      handleTerminate state)
+    _ -> syslog Notice $ "NOT HANDLED YET"
+
 handleTerminate :: ProcessState -> IO ()
 handleTerminate state = do
   writeTerminate state True
@@ -98,7 +107,7 @@ setupProcess opts args = do
     state <- newProcessState
     pid <- getProcessID
 
-    sock <- server socketPath (\packet -> syslog Notice $ "got packet: " ++ (show packet))
+    sock <- server socketPath (\packet -> handlePacket opts state packet)
 
     catch (writeFile pidfile (show pid)) (\e -> syslog Error $ "Could not write pid to file - " ++ (show e))
     catch (writeCommand args) (\e -> syslog Error $ "Could not write commands to file - " ++ (show e))
@@ -231,18 +240,23 @@ main = do
 
   (opts, args) <- readOptions cmd workingDirectory
 
-  putStrLn (show opts)
-
   when (optShowVersion opts) (do
     putStrLn "Gabriel, the process guardian version 0.1"
+    exitImmediately ExitSuccess)
+
+  let socketPath = fromJust $ optSocket opts
+
+  when (optKill opts) (do
+    let packet = KillCommand
+    catch (client socketPath packet) (\e -> putStrLn $ socketPath ++ ": " ++ (show e))
     exitImmediately ExitSuccess)
 
   when ((length args) < 1) (do
     ioError $ userError "Too few arguments, requires program after '--'")
 
   when (optUpdate opts) (do
-    let uc = UpdateCommand args
-    client (fromJust $ optSocket opts) uc
+    let packet = UpdateCommand args
+    catch (client socketPath packet) (\e -> putStrLn $ socketPath ++ ": " ++ (show e))
     exitImmediately ExitSuccess)
 
   -- sanity checking of the process parameters
@@ -250,5 +264,6 @@ main = do
   pidfileExists <- doesFileExist pidfile
   when pidfileExists $ ioError (userError $ "Pid file exists " ++ (show pidfile))
 
-  --daemonize $ setupProcess opts args
-  setupProcess opts args
+  if (optFg opts)
+    then (setupProcess opts args)
+    else (daemonize $ setupProcess opts args)

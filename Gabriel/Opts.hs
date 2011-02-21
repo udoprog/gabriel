@@ -10,6 +10,8 @@ data Options = Options
  { optVerbose     :: Bool
  , optShowVersion :: Bool
  , optUpdate      :: Bool
+ , optFg          :: Bool
+ , optKill        :: Bool
  , optStdout      :: Maybe FilePath
  , optStderr      :: Maybe FilePath
  , optPidfile     :: Maybe FilePath
@@ -25,6 +27,8 @@ defaultOptions wd = Options
  { optVerbose     = False
  , optShowVersion = False
  , optUpdate      = False
+ , optFg          = False
+ , optKill        = False
  , optStdout      = Just (joinPath [wd, "out"])
  , optStderr      = Just (joinPath [wd, "err"])
  , optPidfile     = Just (joinPath [wd, "pid"])
@@ -44,6 +48,10 @@ options =
      (NoArg (\ opts -> opts { optShowVersion = True })) "show version number"
  , Option ['u'] ["update"]
      (NoArg (\ opts -> opts { optUpdate = True })) "update the running command"
+ , Option [] ["kill"]
+     (NoArg (\ opts -> opts { optKill = True })) "kill the running command"
+ , Option [] ["fg"]
+     (NoArg (\ opts -> opts { optFg = True })) "don't daemonize, run in foreground"
  , Option []     ["stdout"]
      (ReqArg (\ f opts -> opts { optStdout = Just f }) "<file>")
      "Redirect stdout to FILE"

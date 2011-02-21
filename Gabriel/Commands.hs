@@ -2,10 +2,11 @@ module Gabriel.Commands where
 
 import Data.Binary
 
-data Command = UpdateCommand [String] deriving (Show)
+data Command = UpdateCommand [String] | KillCommand deriving (Show)
 
 instance Binary Command where
     put (UpdateCommand s) = putWord8 0 >> put s
+    put (KillCommand) = putWord8 1
     {-put Coffee = putWord8 1-}
     {-put Tea = putWord8 2-}
     {-put EnergyDrink = putWord8 3-}
@@ -16,6 +17,7 @@ instance Binary Command where
       tag_ <- getWord8
       case tag_ of
         0 -> get >>= \s -> return (UpdateCommand s)
+        1 -> return KillCommand
         {-1 -> return Coffee-}
         {-2 -> return Tea-}
         {-3 -> return EnergyDrink-}

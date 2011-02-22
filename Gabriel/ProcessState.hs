@@ -1,12 +1,11 @@
 module Gabriel.ProcessState( newProcessState
-                           , readShutdown
-                           , writeShutdown
-                           , readTerminate
-                           , writeTerminate
-                           , readProcessHandle
-                           , writeProcessHandle
-                           , readProcessCommand
-                           , writeProcessCommand
+                           , readShutdown, writeShutdown
+                           , readTerminate, writeTerminate
+                           , readProcessHandle, writeProcessHandle
+                           , readProcessCommand, writeProcessCommand
+                           , readStdOut, writeStdOut
+                           , readStdErr, writeStdErr
+                           , readDelay, writeDelay
                            , waitForTerminate
                            , acknowledgeTerminate
                            , registerTerminate
@@ -39,25 +38,34 @@ import System.Posix.Signals
  - terminateRegulator: 
  -}
 data ProcessState = ProcessState 
-                    { shutdown       :: TVar Bool
-                    , terminate      :: TVar Bool
-                    , processHandle  :: TVar (Maybe ProcessHandle)
-                    , processCommand :: TVar [String]
+                    { shutdown            :: TVar Bool
+                    , terminate           :: TVar Bool
+                    , processHandle       :: TVar (Maybe ProcessHandle)
+                    , processCommand      :: TVar [String]
                     , terminateRegulator  :: MVar ()
+                    , stdOut              :: TVar (Maybe FilePath)
+                    , stdErr              :: TVar (Maybe FilePath)
+                    , delay               :: TVar Int
                     }
 
-newProcessState :: IO ProcessState
-newProcessState = do
+newProcessState out err delay = do
   shutVar    <- atomically $ newTVar False
   termVar    <- atomically $ newTVar False
   processVar <- atomically $ newTVar Nothing
   commandVar <- atomically $ newTVar []
   killReg    <- newEmptyMVar
+  outVar     <- atomically $ newTVar out
+  errVar     <- atomically $ newTVar err
+  delayVar   <- atomically $ newTVar delay
   return ProcessState { shutdown = shutVar
                       , terminate = termVar
                       , processHandle = processVar
                       , processCommand = commandVar
-                      , terminateRegulator = killReg }
+                      , terminateRegulator = killReg
+                      , stdOut = outVar
+                      , stdErr = errVar
+                      , delay = delayVar
+                      }
 
 waitForTerminate :: ProcessState -> Int -> Int -> IO Bool
 waitForTerminate _ _ 0 = return False
@@ -79,29 +87,26 @@ registerTerminate :: ProcessState -> IO ()
 registerTerminate state = do
   putMVar (terminateRegulator state) ()
 
-readTerminate :: ProcessState -> IO Bool
 readTerminate state = atomically $ readTVar (terminate state)
-
-writeTerminate :: ProcessState -> Bool -> IO ()
 writeTerminate state value = atomically $ writeTVar (terminate state) value
 
-readShutdown :: ProcessState -> IO Bool
 readShutdown state = atomically $ readTVar $ shutdown state
-
-writeShutdown :: ProcessState -> Bool -> IO ()
 writeShutdown state value = atomically $ writeTVar (shutdown state) value
 
-readProcessHandle :: ProcessState -> IO (Maybe ProcessHandle)
 readProcessHandle state = atomically $ readTVar $ processHandle state
-
-writeProcessHandle :: ProcessState -> Maybe ProcessHandle -> IO ()
 writeProcessHandle state process = atomically $ writeTVar (processHandle state) process
 
-readProcessCommand :: ProcessState -> IO [String]
 readProcessCommand state = atomically $ readTVar $ processCommand state
-
-writeProcessCommand :: ProcessState -> [String] -> IO ()
 writeProcessCommand state command = atomically $ writeTVar (processCommand state) command
+
+readStdOut state = atomically $ readTVar $ stdOut state
+writeStdOut state value = atomically $ writeTVar (stdOut state) value
+
+readStdErr state = atomically $ readTVar $ stdErr state
+writeStdErr state value = atomically $ writeTVar (stdErr state) value
+
+readDelay state = atomically $ readTVar $ delay state
+writeDelay state value = atomically $ writeTVar (delay state) value
 
 internalRaiseSignal :: ProcessHandle -> Signal -> IO ()
 internalRaiseSignal handle sig =
@@ -134,7 +139,9 @@ handleTerminate state = do
       acknowledgeTerminate state
 
 
-spawnProcess state (outPath, errPath) = do
+spawnProcess state = do
+  outPath <- readStdOut state
+  errPath <- readStdErr state
   args <- readProcessCommand state
   (out, err) <- safeOpenHandles' outPath errPath
 

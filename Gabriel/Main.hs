@@ -12,11 +12,12 @@ import Control.Monad
 import Data.Maybe
 
 import Gabriel.Commands
-import Gabriel.Concurrent as C
 import Gabriel.Opts
+
+import qualified Gabriel.Concurrent as C
 import qualified Gabriel.ProcessState as PS
-import Gabriel.Server as S
-import Gabriel.Utils as U
+import qualified Gabriel.Server as S
+import qualified Gabriel.Utils as U
 
 import System.Directory
 import System.Environment
@@ -30,12 +31,12 @@ import System.Posix.Signals
 import System.Posix.Syslog
 import System.Process
 
-handleSig :: Options -> PS.ProcessState -> IO ()
-handleSig opts state = do
+handleSig :: PS.ProcessState -> IO ()
+handleSig state = do
   PS.writeShutdown state True
   PS.handleTerminate state
 
-handlePacket opts state packet = do
+handlePacket state packet = do
   syslog Notice $ "PACKET: " ++ (show packet)
 
   case packet of
@@ -48,18 +49,22 @@ setupProcess :: Options -> [String] -> IO ()
 setupProcess opts args = do
   withSyslog ("gabriel[" ++ (processName opts args) ++ "]") [PID, PERROR] USER $ do
     state <- PS.newProcessState
+      (optStdout opts)
+      (optStderr opts)
+      (optRestart opts)
+
     pid <- getProcessID
 
-    sock <- S.server socketPath (\packet -> handlePacket opts state packet)
+    sock <- S.server socketPath (\packet -> handlePacket state packet)
 
     catch (writeFile pidfile (show pid)) (\e -> syslog Error $ "Could not write pid to file - " ++ (show e))
     
     PS.writeProcessCommand state args
 
-    installHandler sigTERM (CatchOnce $ handleSig opts state) Nothing
-    installHandler sigINT  (CatchOnce $ handleSig opts state) Nothing
+    installHandler sigTERM (CatchOnce $ handleSig state) Nothing
+    installHandler sigINT  (CatchOnce $ handleSig state) Nothing
 
-    handle <- loopProcess opts state False
+    handle <- loopProcess state False
 
     catch (S.closeSocket sock >> removeFile socketPath)
       (\e -> syslog Error $ "Could not close and remove socket: " ++ (show e))
@@ -79,17 +84,17 @@ setupProcess opts args = do
     socketPath :: FilePath
     socketPath = fromJust $ optSocket opts
     
-loopProcess :: Options -> PS.ProcessState -> Bool -> IO ()
-loopProcess opts state True = do
+loopProcess :: PS.ProcessState -> Bool -> IO ()
+loopProcess state True = do
   syslog Notice $ "Shutting Down"
   return ()
 
-loopProcess opts state False = do
+loopProcess state False = do
   args <- PS.readProcessCommand state
 
   syslog Notice $ "STARTING " ++ (U.formatProcessName args " ")
 
-  exitCode <- PS.spawnProcess state (optStdout opts, optStderr opts)
+  exitCode <- PS.spawnProcess state
 
   syslog Notice $ "EXITED " ++ (show exitCode)
 
@@ -106,21 +111,23 @@ loopProcess opts state False = do
   when terminate (do
     syslog Debug "Registering Termination"
     PS.registerTerminate state)
+ 
+  delay <- delayTime
 
-  if (not shutdown && delayTime > 0) then do
+  if (not shutdown && delay > 0) then do
       delay' state
       shutdown <- PS.readShutdown state
-      loopProcess opts state shutdown
+      loopProcess state shutdown
     else do
-      loopProcess opts state shutdown
+      loopProcess state shutdown
 
   where
-    delayTime = optRestart opts
-    delayShow = show delayTime
+    delayTime = PS.readDelay state
 
     delay' state = do
-      syslog Notice $ "WAITING " ++ delayShow ++ " seconds";
-      wasInterrupted <- C.controlledThreadDelay 1000000 (PS.readShutdown state) delayTime
+      delay <- delayTime
+      syslog Notice $ "WAITING " ++ (show delay) ++ " seconds";
+      wasInterrupted <- C.controlledThreadDelay 1000000 (PS.readShutdown state) delay
       when (wasInterrupted) (syslog Notice "WAIT was Interrupted")
       return ()
 

@@ -1,4 +1,5 @@
-module Gabriel.Commands where
+module Gabriel.Commands ( Command(..)
+                        ) where
 
 import Data.Binary
 

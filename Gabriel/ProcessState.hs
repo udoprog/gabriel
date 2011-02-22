@@ -11,17 +11,25 @@ module Gabriel.ProcessState( newProcessState
                            , acknowledgeTerminate
                            , registerTerminate
                            , ProcessState
-                           , raiseSignal
+                           , internalRaiseSignal
+                           , handleTerminate
+                           , spawnProcess
 ) where
 
+import Control.Monad (when)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, tryTakeMVar, putMVar, takeMVar)
 import Control.Concurrent.STM (atomically)
 import Control.Concurrent.STM.TVar (newTVar, writeTVar, readTVar, TVar)
 
 import System.Posix.Signals (installHandler, Handler(..), signalProcess, Signal)
-import System.Process (ProcessHandle)
 import System.Process.Internals (withProcessHandle_, ProcessHandle__(OpenHandle))
+
+import System.Process (createProcess, proc, CreateProcess(..), StdStream(..), ProcessHandle, waitForProcess)
+import System.IO (hClose, openFile, IOMode(..))
+import System.Posix.Syslog
+import System.Posix.Signals
+
 
 {-
  - shutdown:        the child and parent process (gabriel) should both terminate
@@ -95,9 +103,76 @@ readProcessCommand state = atomically $ readTVar $ processCommand state
 writeProcessCommand :: ProcessState -> [String] -> IO ()
 writeProcessCommand state command = atomically $ writeTVar (processCommand state) command
 
-raiseSignal :: ProcessHandle -> Signal -> IO ()
-raiseSignal handle sig =
+internalRaiseSignal :: ProcessHandle -> Signal -> IO ()
+internalRaiseSignal handle sig =
   withProcessHandle_ handle (\p -> case p of
     OpenHandle pid -> do
       signalProcess sig pid
       return $ OpenHandle pid)
+
+handleTerminate :: ProcessState -> IO ()
+handleTerminate state = do
+  writeTerminate state True
+
+  process <- readProcessHandle state
+  handleTerminate' process
+
+  writeTerminate state False
+
+  where
+    handleTerminate' :: Maybe ProcessHandle -> IO ()
+    handleTerminate' Nothing = do
+      syslog Notice "No child process running"
+    handleTerminate' (Just p) = do
+      syslog Notice "Terminating child process (SIGTERM)"
+      internalRaiseSignal p sigTERM
+      isDead <- waitForTerminate state 1000000 10
+      -- if process is not dead, send a 'kill' signal
+      when (not isDead) (do
+        syslog Notice "Killing child process (SIGKILL)"
+        internalRaiseSignal p sigKILL)
+      acknowledgeTerminate state
+
+
+spawnProcess state (outPath, errPath) = do
+  args <- readProcessCommand state
+  (out, err) <- safeOpenHandles' outPath errPath
+
+  (Just s, _, _, p) <- createProcess (proc (head args) (tail args))
+    { std_in  = CreatePipe
+    , std_out = out
+    , std_err = err
+    }
+
+  writeProcessHandle state (Just p)
+
+  exitCode <- waitForProcess p
+
+  writeProcessHandle state Nothing
+
+  {- Important to make sure stdin is not garbage collected (and closed) -}
+  hClose s
+
+  return exitCode
+
+  where
+    safeOpenHandles' outPath errPath = do
+      out <- safeOpenHandle' "stdout" outPath
+      err <- safeOpenHandle' "stderr" errPath
+      return (convert' out, convert' err)
+
+      where
+        convert' handle = (case handle of Nothing -> Inherit; Just h -> UseHandle h)
+
+        safeOpenHandle' name (Just path) = 
+          {- Open the handle, or Nothing if an exception is raised -}
+          catch
+            (do
+              h <- openFile path AppendMode
+              return $ Just h)
+            (\e -> do
+              syslog Error $ "Failed to open handle '" ++ name ++ "'"
+              return Nothing)
+
+        safeOpenHandle' name Nothing = return Nothing
+

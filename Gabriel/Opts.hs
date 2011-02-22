@@ -16,7 +16,6 @@ data Options = Options
  , optStderr      :: Maybe FilePath
  , optPidfile     :: Maybe FilePath
  , optCwd         :: Maybe FilePath
- , optCommand     :: Maybe FilePath
  , optSocket      :: Maybe FilePath
  , optName        :: Maybe String
  , optRestart     :: Int
@@ -32,7 +31,6 @@ defaultOptions wd = Options
  , optStdout      = Just (joinPath [wd, "out"])
  , optStderr      = Just (joinPath [wd, "err"])
  , optPidfile     = Just (joinPath [wd, "pid"])
- , optCommand     = Just (joinPath [wd, "command"])
  , optSocket      = Just (joinPath [wd, "socket"])
  , optCwd         = Just wd
  , optName        = Nothing
@@ -64,9 +62,6 @@ options =
  , Option []     ["cwd"]
      (ReqArg (\ f opts -> opts { optCwd = Just f }) "<dir>")
      "Current working directory"
- , Option []     ["command"]
-     (ReqArg (\ f opts -> opts { optCommand = Just f }) "<command>")
-     "Where to store the running command"
  , Option ['S']     ["socket"]
      (ReqArg (\ f opts -> opts { optSocket = Just f }) "<path>")
      "Socket to use for communication"

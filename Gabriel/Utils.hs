@@ -19,9 +19,9 @@ formatProcessName array delim = formatProcessName' array delim 0
  - Read any Readable type in any Monad.
  - Return the default value @f unless a match can be found.
  -}
-readM :: (Monad m, Read a) => String -> a -> m a
+readM :: (Read a) => String -> a -> a
 readM s f = do
   let m = [x | (x,_) <- reads s]
   case m of
-    [x] -> return x
-    _   -> return f
+    [x] -> x
+    _   -> f

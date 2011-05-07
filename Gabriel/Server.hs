@@ -61,7 +61,8 @@ server :: FilePath -> (Command -> IO Command) -> IO (Server)
 server path handle = do
   server <- newServer path
   forkIO $ do
-    catch (accept' server handle) (\e -> return ())
+    catch (accept' server handle) (\e -> syslog Error (show e)) 
+    syslog Info "Shutting down socket listener"
     signal server
   return server
 

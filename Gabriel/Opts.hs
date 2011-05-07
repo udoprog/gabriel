@@ -6,6 +6,8 @@ import System.Directory
 import Data.Maybe (isNothing, fromJust)
 import Control.Monad (when)
 import Data.List (find)
+import Gabriel.ProcessState as PS
+import Gabriel.Utils as U
 
 data Options = Options
  { optVerbose     :: Bool
@@ -23,6 +25,7 @@ data Options = Options
  , optSocket      :: Maybe FilePath
  , optName        :: Maybe String
  , optSig         :: Maybe String
+ , killPattern    :: Maybe [PS.SignalStep]
  , optRestartInt  :: Int
  , optEnviron     :: [(String, String)]
  } deriving Show
@@ -43,6 +46,7 @@ defaultOptions wd = Options
  , optSocket      = Nothing
  , optName        = Nothing
  , optSig         = Nothing
+ , killPattern    = Nothing
  , optRestartInt  = 5
  , optEnviron     = []
  }
@@ -90,20 +94,12 @@ options =
  , Option []     ["sig"]
      (ReqArg (\ f opts -> opts { optSig = Just f }) "<signal>")
      "Custom signal to send to child process"
+ , Option []     ["kill-pattern"]
+     (ReqArg (\ f opts -> opts { killPattern = Just $ parseKillPattern f }) "<pattern>")
+     "A wait-and-signal pattern, like HUP:10:KILL which will be used to terminate the process"
  , Option ['E'] []
      (ReqArg (\ f opts -> opts { optEnviron = updateEnviron (optEnviron opts) f }) "<name>=<value>")
      "Update environment variable (can be used multiple times)"
- {-, Option ['o']     ["output"]-}
-     {-(OptArg ((\ f opts -> opts { optOutput = Just f }) . fromMaybe "output")-}
-             {-"FILE")-}
-     {-"output FILE"-}
- {-, Option ['c']     []-}
-     {-(OptArg ((\ f opts -> opts { optInput = Just f }) . fromMaybe "input")-}
-             {-"FILE")-}
-     {-"input FILE"-}
- {-, Option ['L']     ["libdir"]-}
-     {-(ReqArg (\ d opts -> opts { optLibDirs = optLibDirs opts ++ [d] }) "DIR")-}
-     {-"library directory"-}
  ]
 
  where
@@ -111,6 +107,20 @@ options =
   updateEnviron old add = do
     let pos = find (=='=') add
     [("test", "too")]
+
+parseKillPattern :: String -> [PS.SignalStep]
+parseKillPattern s = toSignalSteps $ split' s ':'
+  where
+    split' [] delim = [""]
+    split' (c:cs) delim
+        | c == delim = "" : rest
+        | otherwise = (c : head rest) : tail rest
+           where
+               rest = split' cs delim
+    toSignalSteps :: [String] -> [PS.SignalStep]
+    toSignalSteps []           = []
+    toSignalSteps [s1]         = PS.SignalStep 0 (U.readM s1 PS.NONE) : toSignalSteps []
+    toSignalSteps (s1:s2:rest) = PS.SignalStep (U.readM s2 0) (U.readM s1 PS.NONE) : toSignalSteps rest
 
 updateOptions :: Options -> IO Options
 updateOptions opts = do

@@ -60,7 +60,7 @@ toSSignal HUP  = S.sigHUP
 toSSignal TERM = S.sigTERM
 toSSignal NONE = 0
 
-data SignalStep = SignalStep Int Signal
+data SignalStep = SignalStep Int Signal deriving (Show)
 
 newProcessState out err delay command = do
   termVar    <- newEmptyMVar
@@ -82,7 +82,7 @@ newProcessState out err delay command = do
                       }
 
 takeTerminate state = tryTakeMVar (terminate state)
-putTerminate state = putMVar (terminate state) ()
+putTerminate state = tryPutMVar (terminate state) ()
 
 readShutdown state = atomically $ readTVar $ shutdown state
 writeShutdown state value = atomically $ writeTVar (shutdown state) value
@@ -99,7 +99,8 @@ writeCommand path command = do
   handle <- safeOpenHandle' "command" WriteMode path
   (case handle of
     Just h -> (do
-      coerce' h command)
+      coerce' h command
+      hClose h)
     Nothing -> return ())
   where
     coerce' h [] = hClose h
@@ -133,53 +134,72 @@ readCommand path = do
 readDelay state = atomically $ readTVar $ delay state
 writeDelay state value = atomically $ writeTVar (delay state) value
 
-signalProcess :: Bool -> ProcessState -> [SignalStep] -> IO ()
-signalProcess kill state steps = do
-  when kill $ putTerminate state
-
-  pid <- readProcessHandle state
-
-  case pid of
-    Nothing -> notice' "No process running"
-    Just  p -> kill' p steps
+signalProcess :: Bool -> ProcessState -> [SignalStep] -> IO Bool
+signalProcess kill state steps 
+  | kill == True = withPid' state (\p -> do
+    putTerminate state
+    v <- kill' p steps
+    return v)
+  | otherwise = withPid' state (\p -> do
+    sig' p steps
+    return True)
 
   where
     notice' :: String -> IO ()
     notice' msg = L.syslog L.Notice msg
 
-    morekill' :: Bool -> ProcessHandle -> [SignalStep] -> IO ()
-    morekill' b p t = if b
-      then notice' "Process is dead"
-      else kill' p t
+    debug' :: String -> IO ()
+    debug' msg = L.syslog L.Debug msg
 
     delay' seconds = threadDelay (1000000 * seconds)
 
-    kill' :: ProcessHandle -> [SignalStep] -> IO ()
-    kill' _ []    = do
+    withPid' :: ProcessState -> (ProcessHandle -> IO Bool) -> IO Bool
+    withPid' state action = do
+      pid <- readProcessHandle state
+
+      case pid of
+        Nothing -> do
+          notice' "No process running"
+          return False
+        Just  p -> action p
+
+    kill' :: ProcessHandle -> [SignalStep] -> IO Bool
+    kill' _ [] = do
       notice' "No more steps to try"
+      return False
     kill' p (SignalStep sleep sig:t) = do
-      notice' $ "Sending " ++ (show sig) ++ " " ++ (show $ toSSignal sig)
-      internal' p TERM
-      
-      if kill
+      internal' p sig
+
+      notice' $ "Waiting for " ++ (show sleep) ++ " seconds"
+      dead <- waitack' state sleep
+
+      if dead
         then do
-          dead <- waitack' state sleep
-          morekill' dead p t
-        else do
-          delay' sleep
-          notice' "Signals sent"
+          notice' $ "Process has been killed"
+          return True
+        else kill' p t
+
+    sig' :: ProcessHandle -> [SignalStep] -> IO ()
+    sig' _ []    = do
+      notice' "All signals sent"
+    sig' p (SignalStep sleep sig:t) = do
+      internal' p sig
+      sig' p t
 
     waitack' :: ProcessState -> Int -> IO Bool
     waitack' _ 0 = return False
     waitack' state delay = do
       dead <- isEmptyMVar $ terminate state
 
+      debug' "Sleeping for one second"
+
       if dead
         then return True
         else delay' 1 >> waitack' state (delay - 1)
 
     internal' :: ProcessHandle -> Signal -> IO ()
-    internal' handle (sig) =
+    internal' handle (sig) = do
+      notice' $ "Sending " ++ (show sig) ++ " " ++ (show $ toSSignal sig)
       withProcessHandle_ handle (\p -> case p of
         OpenHandle pid -> do
           S.signalProcess (toSSignal sig) pid

@@ -32,30 +32,31 @@ import System.Posix.Signals
 import System.Posix.Syslog
 import System.Process
 
-defaultTerm :: [PS.SignalStep]
-defaultTerm = [PS.SignalStep 10 PS.TERM, PS.SignalStep 10 PS.KILL]
+defaultKillPattern :: [PS.SignalStep]
+defaultKillPattern = [PS.SignalStep 10 PS.TERM, PS.SignalStep 10 PS.KILL]
 
-handleSig :: PS.ProcessState -> S.Server -> IO ()
-handleSig state server = do
+handleSig :: [PS.SignalStep] -> PS.ProcessState -> S.Server -> IO ()
+handleSig pattern state server = do
   PS.writeShutdown state True
-  PS.signalProcess True state defaultTerm
+  PS.signalProcess True state pattern
   {- signal server, dirty but effective -}
   S.signal server
 
-handlePacket state packet = do
+handlePacket :: [PS.SignalStep] -> PS.ProcessState -> Command -> IO Command
+handlePacket pattern state packet = do
   syslog Notice $ "(unix socket) Got " ++ (show packet)
 
   res <- (case packet of
     KillCommand -> (do
       PS.writeShutdown state True
-      PS.signalProcess True state defaultTerm
+      PS.signalProcess True state pattern
       return CommandOk)
     SigCommand name -> (do
-      sig <- U.readM name PS.NONE
+      let sig = U.readM name PS.NONE
       PS.signalProcess False state [PS.SignalStep 0 sig]
       return CommandOk)
     RestartCommand -> (do
-      PS.signalProcess True state defaultTerm
+      PS.signalProcess True state pattern
       return CommandOk)
     CheckCommand -> do
       ph <- PS.readProcessHandle state
@@ -77,9 +78,12 @@ setupProcess opts args = do
       (optRestartInt opts)
       (optCommand opts)
 
-    pid <- getProcessID
+    let server = handlePacket pattern state
 
-    server <- S.server socketPath (\packet -> handlePacket state packet)
+    pid    <- getProcessID
+    server <- S.server socketPath server
+
+    let sigHandler = handleSig pattern state server
 
     catch (writeFile pidfile (show pid)) (\e -> syslog Error $ "Could not write pid to file - " ++ (show e))
     
@@ -87,11 +91,14 @@ setupProcess opts args = do
 
     changeWorkingDirectory (optCwd opts)
 
-    installHandler sigTERM (CatchOnce $ handleSig state server) Nothing
-    installHandler sigINT  (CatchOnce $ handleSig state server) Nothing
+    installHandler sigTERM (CatchOnce $ sigHandler) Nothing
+    installHandler sigINT  (CatchOnce $ sigHandler) Nothing
 
-    handle <- mainloop state False
+    {-Officially tell the mainloop to handle business as good as it can, no guarantees-}
+    forkIO $ mainloop state
 
+    {-Let the socket govern if we should shutdown, S.signal server will also
+     - cause a shutdown-}
     S.waitFor server
 
     catch (removeFile socketPath)
@@ -101,6 +108,11 @@ setupProcess opts args = do
       (\e -> syslog Error $ "Could not remove pid file: " ++ (show e))
 
   where
+    pattern :: [PS.SignalStep]
+    pattern = (case (killPattern opts) of
+        Just p -> p
+        Nothing -> defaultKillPattern)
+
     processName :: Options -> [String] -> String
     processName opts args = case (optName opts) of
       Nothing -> U.formatProcessName args " "
@@ -112,12 +124,8 @@ setupProcess opts args = do
     socketPath :: FilePath
     socketPath = fromJust $ optSocket opts
     
-mainloop :: PS.ProcessState -> Bool -> IO ()
-mainloop state True = do
-  syslog Notice $ "Shutting Down"
-  return ()
-
-mainloop state False = do
+mainloop :: PS.ProcessState -> IO ()
+mainloop state = do
   args <- PS.readProcessCommand state
 
   syslog Notice $ "Running " ++ (U.formatProcessName args " ")
@@ -144,13 +152,17 @@ mainloop state False = do
  
   delay <- delayTime
 
-  if (not shutdown && delay > 0)
-    then (do
-      delay' state
-      shutdown <- PS.readShutdown state
-      mainloop state shutdown)
-    else (do
-      mainloop state shutdown)
+  shutdown <-
+    if (not shutdown && delay > 0)
+      then (do
+        delay' state
+        PS.readShutdown state)
+      else
+        return shutdown
+
+  if shutdown
+    then return ()
+    else mainloop state
 
   where
     delayTime = PS.readDelay state

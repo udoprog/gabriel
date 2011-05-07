@@ -32,13 +32,15 @@ import System.Posix.Signals
 import System.Posix.Syslog
 import System.Process
 
-handleSig :: PS.ProcessState -> IO ()
-handleSig state = do
+handleSig :: PS.ProcessState -> S.Server -> IO ()
+handleSig state server = do
   PS.writeShutdown state True
   PS.terminateProcess state
+  {- signal server, dirty but effective -}
+  S.signal server
 
 handlePacket state packet = do
-  syslog Notice $ "PACKET: " ++ (show packet)
+  syslog Notice $ "(unix socket) Got " ++ (show packet)
 
   res <- (case packet of
     KillCommand -> (do
@@ -78,8 +80,8 @@ setupProcess opts args = do
 
     changeWorkingDirectory (optCwd opts)
 
-    installHandler sigTERM (CatchOnce $ handleSig state) Nothing
-    installHandler sigINT  (CatchOnce $ handleSig state) Nothing
+    installHandler sigTERM (CatchOnce $ handleSig state server) Nothing
+    installHandler sigINT  (CatchOnce $ handleSig state server) Nothing
 
     handle <- mainloop state False
 
@@ -111,11 +113,11 @@ mainloop state True = do
 mainloop state False = do
   args <- PS.readProcessCommand state
 
-  syslog Notice $ "STARTING " ++ (U.formatProcessName args " ")
+  syslog Notice $ "Running " ++ (U.formatProcessName args " ")
 
   exitCode <- PS.spawnProcess state
 
-  syslog Notice $ "EXITED " ++ (show exitCode)
+  syslog Notice $ "Process exited " ++ (show exitCode)
 
   {-
    - Needs to close this here, otherwise pipe will probably be GCed and closed.
@@ -128,8 +130,10 @@ mainloop state False = do
   terminate <- PS.takeTerminate state
 
   case terminate of
-    Just () ->  (do
-    syslog Debug "Process terminated")
+    Just _ ->  do
+      syslog Debug "Process terminated"
+    Nothing -> do
+      syslog Debug "Process unexpectedly exited"
  
   delay <- delayTime
 

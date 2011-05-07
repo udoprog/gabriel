@@ -126,14 +126,14 @@ terminateProcess state = do
     kill' Nothing = do
       syslog Notice "No process running"
     kill' (Just p) = do
-      syslog Notice "Sending SIGTERM"
+      syslog Notice $ "Sending SIGTERM"
       internal' p sigTERM
       isDead <- waitack' state 1000000 10
       -- if pid is not dead, send a 'kill' signal
       when (not isDead) (do
-        syslog Notice "Sending SIGKILL"
+        syslog Notice $ "Sending SIGKILL (stubborn)"
         internal' p sigKILL)
-      syslog Notice "Process should be dead or severly crippled by now"
+      syslog Notice "Process should be dead by now"
 
     waitack' :: ProcessState -> Int -> Int -> IO Bool
     waitack' _ _ 0 = return False

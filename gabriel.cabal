@@ -65,6 +65,8 @@ Executable gabriel
                   filepath,
                   ghc-binary,
                   bytestring,
+                  network-bytestring,
+                  base64-bytestring,
                   network
   
   Ghc-Options: -threaded

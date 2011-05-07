@@ -1,8 +1,9 @@
-module Gabriel.Opts (readOptions, Options(..)) where
+module Gabriel.Opts (readOptions, updateOptions, Options(..)) where
 
 import System.Console.GetOpt
 import System.FilePath
-import Data.Maybe (isNothing)
+import System.Directory
+import Data.Maybe (isNothing, fromJust)
 import Control.Monad (when)
 import Data.List (find)
 
@@ -12,13 +13,16 @@ data Options = Options
  , optUpdate      :: Bool
  , optFg          :: Bool
  , optKill        :: Bool
+ , optCheck       :: Bool
+ , optRestart     :: Bool
+ , optCwd         :: FilePath
+ , optCommand     :: Maybe FilePath
  , optStdout      :: Maybe FilePath
  , optStderr      :: Maybe FilePath
  , optPidfile     :: Maybe FilePath
- , optCwd         :: Maybe FilePath
  , optSocket      :: Maybe FilePath
  , optName        :: Maybe String
- , optRestart     :: Int
+ , optRestartInt  :: Int
  , optEnviron     :: [(String, String)]
  } deriving Show
 
@@ -28,13 +32,16 @@ defaultOptions wd = Options
  , optUpdate      = False
  , optFg          = False
  , optKill        = False
- , optStdout      = Just (joinPath [wd, "out"])
- , optStderr      = Just (joinPath [wd, "err"])
- , optPidfile     = Just (joinPath [wd, "pid"])
- , optSocket      = Just (joinPath [wd, "socket"])
- , optCwd         = Just wd
+ , optCheck       = False
+ , optRestart     = False
+ , optCwd         = wd
+ , optCommand     = Nothing
+ , optStdout      = Nothing
+ , optStderr      = Nothing
+ , optPidfile     = Nothing
+ , optSocket      = Nothing
  , optName        = Nothing
- , optRestart     = 5
+ , optRestartInt  = 5
  , optEnviron     = []
  }
 
@@ -48,25 +55,32 @@ options =
      (NoArg (\ opts -> opts { optUpdate = True })) "update the running command"
  , Option [] ["kill"]
      (NoArg (\ opts -> opts { optKill = True })) "kill the running command"
+ , Option [] ["check"]
+     (NoArg (\ opts -> opts { optCheck = True })) "check if the monitor process is running"
+ , Option [] ["restart"]
+     (NoArg (\ opts -> opts { optRestart = True })) "restart the running command"
  , Option [] ["fg"]
      (NoArg (\ opts -> opts { optFg = True })) "don't daemonize, run in foreground"
+ , Option []     ["cwd"]
+     (ReqArg (\ f opts -> opts { optCwd = f }) "<dir>")
+     "Current working directory"
+ , Option []     ["command"]
+     (ReqArg (\ f opts -> opts { optCommand = Just f }) "<file>")
+     "File to store and/or read running command from depending if arguments are specific or not"
  , Option []     ["stdout"]
-     (ReqArg (\ f opts -> opts { optStdout = Just f }) "<file>")
+     (ReqArg (\ f opts -> opts { optStdout  = Just f }) "<file>")
      "Redirect stdout to FILE"
  , Option []     ["stderr"]
-     (ReqArg (\ f opts -> opts { optStderr = Just f }) "<file>")
+     (ReqArg (\ f opts -> opts { optStderr  = Just f }) "<file>")
      "Redirect stderr to FILE"
  , Option []     ["pidfile"]
      (ReqArg (\ f opts -> opts { optPidfile = Just f }) "<file>")
      "Use FILE as exclusive pidfile"
- , Option []     ["cwd"]
-     (ReqArg (\ f opts -> opts { optCwd = Just f }) "<dir>")
-     "Current working directory"
  , Option ['S']     ["socket"]
-     (ReqArg (\ f opts -> opts { optSocket = Just f }) "<path>")
+     (ReqArg (\ f opts -> opts { optSocket  = Just f }) "<path>")
      "Socket to use for communication"
- , Option []     ["restart"]
-     (ReqArg (\ f opts -> opts { optRestart = read f }) "<seconds>")
+ , Option []     ["restart-interval"]
+     (ReqArg (\ f opts -> opts { optRestartInt = read f }) "<seconds>")
      "Time to wait before restarting the process"
  , Option []     ["name"]
      (ReqArg (\ f opts -> opts { optName = Just f }) "<name>")
@@ -92,6 +106,32 @@ options =
   updateEnviron old add = do
     let pos = find (=='=') add
     [("test", "too")]
+
+updateOptions :: Options -> IO Options
+updateOptions opts = do
+  cmd <-  (canon wd (optCommand opts)  "command")
+  out  <- (canon wd (optStdout opts)  "out")
+  err  <- (canon wd (optStderr opts)  "err")
+  pid  <- (canon wd (optPidfile opts) "pid")
+  sock <- (canon wd (optSocket opts)  "sock")
+
+  return opts {
+    optCommand = Just cmd,
+    optStdout  = Just out,
+    optStderr  = Just err,
+    optPidfile = Just pid,
+    optSocket  = Just sock
+  }
+  where
+    wd = optCwd opts
+    oldOrJust val optional = (case val of
+      Nothing -> optional
+      Just v  -> v)
+    canon :: FilePath -> Maybe FilePath -> String -> IO FilePath
+    canon wd path def = do
+      canonicalizePath (case path of
+        Just p -> p
+        Nothing -> joinPath [wd, def])
 
 readOptions :: [String] -> FilePath -> IO (Options, [String])
 readOptions argv workingDirectory = do

@@ -27,6 +27,7 @@ import System.IO
 import System.Posix.Daemonize
 import System.Posix.Directory
 import System.Posix.Process
+import System.Posix.Files
 import System.Posix.Signals
 import System.Posix.Syslog
 import System.Process
@@ -34,16 +35,29 @@ import System.Process
 handleSig :: PS.ProcessState -> IO ()
 handleSig state = do
   PS.writeShutdown state True
-  PS.handleTerminate state
+  PS.terminateProcess state
 
 handlePacket state packet = do
   syslog Notice $ "PACKET: " ++ (show packet)
 
-  case packet of
+  res <- (case packet of
     KillCommand -> (do
       PS.writeShutdown state True
-      PS.handleTerminate state)
-    _ -> syslog Notice $ "NOT HANDLED YET"
+      PS.terminateProcess state
+      return CommandOk)
+    RestartCommand -> (do
+      PS.terminateProcess state
+      return CommandOk)
+    CheckCommand -> do
+      ph <- PS.readProcessHandle state
+      case ph of
+        Just p -> return CommandOk
+        Nothing -> return $ CommandError "Process is not running"
+    _ -> do
+      syslog Notice $ "NOT HANDLED YET"
+      return (CommandError "Command not handled"))
+
+  return res
 
 setupProcess :: Options -> [String] -> IO ()
 setupProcess opts args = do
@@ -51,22 +65,27 @@ setupProcess opts args = do
     state <- PS.newProcessState
       (optStdout opts)
       (optStderr opts)
-      (optRestart opts)
+      (optRestartInt opts)
+      (optCommand opts)
 
     pid <- getProcessID
 
-    sock <- S.server socketPath (\packet -> handlePacket state packet)
+    server <- S.server socketPath (\packet -> handlePacket state packet)
 
     catch (writeFile pidfile (show pid)) (\e -> syslog Error $ "Could not write pid to file - " ++ (show e))
     
     PS.writeProcessCommand state args
 
+    changeWorkingDirectory (optCwd opts)
+
     installHandler sigTERM (CatchOnce $ handleSig state) Nothing
     installHandler sigINT  (CatchOnce $ handleSig state) Nothing
 
-    handle <- loopProcess state False
+    handle <- mainloop state False
 
-    catch (S.closeSocket sock >> removeFile socketPath)
+    S.waitFor server
+
+    catch (removeFile socketPath)
       (\e -> syslog Error $ "Could not close and remove socket: " ++ (show e))
     
     catch (removeFile pidfile)
@@ -84,12 +103,12 @@ setupProcess opts args = do
     socketPath :: FilePath
     socketPath = fromJust $ optSocket opts
     
-loopProcess :: PS.ProcessState -> Bool -> IO ()
-loopProcess state True = do
+mainloop :: PS.ProcessState -> Bool -> IO ()
+mainloop state True = do
   syslog Notice $ "Shutting Down"
   return ()
 
-loopProcess state False = do
+mainloop state False = do
   args <- PS.readProcessCommand state
 
   syslog Notice $ "STARTING " ++ (U.formatProcessName args " ")
@@ -106,20 +125,21 @@ loopProcess state False = do
   {-
    - This termination was the result of an explicit termination
    -}
-  terminate <- PS.readTerminate state
+  terminate <- PS.takeTerminate state
 
-  when terminate (do
-    syslog Debug "Registering Termination"
-    PS.registerTerminate state)
+  case terminate of
+    Just () ->  (do
+    syslog Debug "Process terminated")
  
   delay <- delayTime
 
-  if (not shutdown && delay > 0) then do
+  if (not shutdown && delay > 0)
+    then (do
       delay' state
       shutdown <- PS.readShutdown state
-      loopProcess state shutdown
-    else do
-      loopProcess state shutdown
+      mainloop state shutdown)
+    else (do
+      mainloop state shutdown)
 
   where
     delayTime = PS.readDelay state
@@ -138,6 +158,11 @@ main = do
 
   (opts, args) <- readOptions cmd workingDirectory
 
+  opts <- updateOptions opts
+
+  when (optVerbose opts) (do
+    print opts)
+
   when (optShowVersion opts) (do
     putStrLn "Gabriel, the process guardian version 0.1"
     exitImmediately ExitSuccess)
@@ -145,17 +170,43 @@ main = do
   let socketPath = fromJust $ optSocket opts
 
   when (optKill opts) (do
-    let packet = KillCommand
-    catch (S.client socketPath packet) (\e -> putStrLn $ socketPath ++ ": " ++ (show e))
-    exitImmediately ExitSuccess)
+    res <- S.clientPoll socketPath KillCommand
+    case res of
+      CommandOk -> exitImmediately ExitSuccess
+      CommandError msg -> do
+        putStrLn $ msg
+        exitImmediately $ ExitFailure 1)
+
+
+  when (optRestart opts) (do
+    res <- S.clientPoll socketPath RestartCommand
+    case res of
+      CommandOk -> exitImmediately ExitSuccess
+      CommandError msg -> do
+        putStrLn $ msg
+        exitImmediately $ ExitFailure 1)
+
+  when (optCheck opts) (do
+    res <- S.clientPoll socketPath CheckCommand
+    case res of
+      CommandOk -> exitImmediately ExitSuccess
+      CommandError msg -> do
+        putStrLn $ msg
+        exitImmediately $ ExitFailure 1)
+
+  args <- readArgs args (optCommand opts)
 
   when ((length args) < 1) (do
     ioError $ userError "Too few arguments, requires program after '--'")
 
   when (optUpdate opts) (do
     let packet = UpdateCommand args
-    catch (S.client socketPath packet) (\e -> putStrLn $ socketPath ++ ": " ++ (show e))
-    exitImmediately ExitSuccess)
+    res <- S.clientPoll socketPath packet
+    case res of
+      CommandOk -> exitImmediately ExitSuccess
+      CommandError msg -> do
+        putStrLn $ msg
+        exitImmediately $ ExitFailure 1)
 
   -- sanity checking of the process parameters
   let pidfile = fromJust $ optPidfile opts
@@ -165,3 +216,15 @@ main = do
   if (optFg opts)
     then (setupProcess opts args)
     else (daemonize $ setupProcess opts args)
+
+  where
+    readArgs :: [String] -> Maybe FilePath -> IO [String]
+    readArgs args path = do
+      if ((length args) < 1)
+        then do
+          args <- PS.readCommand path
+          return args
+        else
+          return args
+        
+

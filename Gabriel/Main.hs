@@ -189,7 +189,9 @@ main = do
   when (optCheck opts) (do
     res <- S.clientPoll socketPath CheckCommand
     case res of
-      CommandOk -> exitImmediately ExitSuccess
+      CommandOk -> do
+        putStrLn $ "Process is OK"
+        exitImmediately ExitSuccess
       CommandError msg -> do
         putStrLn $ msg
         exitImmediately $ ExitFailure 1)

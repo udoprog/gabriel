@@ -1,30 +1,39 @@
-module Gabriel.ProcessState( newProcessState
-                           , readShutdown, writeShutdown
-                           , takeTerminate, putTerminate
-                           , readProcessHandle, writeProcessHandle
-                           , readProcessCommand, writeProcessCommand
-                           , readDelay, writeDelay
-                           , readCommand, writeCommand
-                           , ProcessState
-                           , terminateProcess
-                           , spawnProcess
+module Gabriel.ProcessState( 
+    ProcessState
+  , SignalStep(..)
+  , Signal(..)
+  , newProcessState
+  , putTerminate
+  , readCommand
+  , readDelay
+  , readProcessCommand
+  , readProcessHandle
+  , readShutdown
+  , spawnProcess
+  , takeTerminate
+  , signalProcess
+  , writeCommand
+  , writeDelay
+  , writeProcessCommand
+  , writeProcessHandle
+  , writeShutdown
 ) where
 
-import Control.Monad (when)
-import Data.Maybe (isJust, fromJust)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar
-import Control.Concurrent.STM (atomically)
-import Control.Concurrent.STM.TVar (newTVar, writeTVar, readTVar, TVar)
+import Control.Concurrent.STM
+import Control.Concurrent.STM.TVar
+import Control.Monad (when)
 
-import System.Posix.Signals (installHandler, Handler(..), signalProcess, Signal)
+import Data.Maybe (isJust, fromJust)
+
+import System.IO
+import qualified System.Posix.Signals as S
+import qualified System.Posix.Syslog as L
+import System.Process (createProcess, proc, CreateProcess(..), StdStream(..), ProcessHandle, waitForProcess)
 import System.Process.Internals (withProcessHandle_, ProcessHandle__(OpenHandle))
 
-import System.Process (createProcess, proc, CreateProcess(..), StdStream(..), ProcessHandle, waitForProcess)
-import System.IO
-import System.Posix.Syslog
-import System.Posix.Signals
-
+import Gabriel.Utils as U
 
 {-
  - shutdown:        the child and parent process (gabriel) should both terminate
@@ -42,6 +51,16 @@ data ProcessState = ProcessState
                     , commandPath         :: Maybe FilePath
                     , delay               :: TVar Int
                     }
+
+data Signal = KILL | HUP | TERM | NONE deriving (Show, Read)
+
+toSSignal :: Signal -> S.Signal
+toSSignal KILL = S.sigKILL
+toSSignal HUP  = S.sigHUP
+toSSignal TERM = S.sigTERM
+toSSignal NONE = 0
+
+data SignalStep = SignalStep Int Signal
 
 newProcessState out err delay command = do
   termVar    <- newEmptyMVar
@@ -114,41 +133,56 @@ readCommand path = do
 readDelay state = atomically $ readTVar $ delay state
 writeDelay state value = atomically $ writeTVar (delay state) value
 
-terminateProcess :: ProcessState -> IO ()
-terminateProcess state = do
-  putTerminate state
+signalProcess :: Bool -> ProcessState -> [SignalStep] -> IO ()
+signalProcess kill state steps = do
+  when kill $ putTerminate state
 
   pid <- readProcessHandle state
-  kill' pid
+
+  case pid of
+    Nothing -> notice' "No process running"
+    Just  p -> kill' p steps
 
   where
-    kill' :: Maybe ProcessHandle -> IO ()
-    kill' Nothing = do
-      syslog Notice "No process running"
-    kill' (Just p) = do
-      syslog Notice $ "Sending SIGTERM"
-      internal' p sigTERM
-      isDead <- waitack' state 1000000 10
-      -- if pid is not dead, send a 'kill' signal
-      when (not isDead) (do
-        syslog Notice $ "Sending SIGKILL (stubborn)"
-        internal' p sigKILL)
-      syslog Notice "Process should be dead by now"
+    notice' :: String -> IO ()
+    notice' msg = L.syslog L.Notice msg
 
-    waitack' :: ProcessState -> Int -> Int -> IO Bool
-    waitack' _ _ 0 = return False
-    waitack' state delay limit = do
+    morekill' :: Bool -> ProcessHandle -> [SignalStep] -> IO ()
+    morekill' b p t = if b
+      then notice' "Process is dead"
+      else kill' p t
+
+    delay' seconds = threadDelay (1000000 * seconds)
+
+    kill' :: ProcessHandle -> [SignalStep] -> IO ()
+    kill' _ []    = do
+      notice' "No more steps to try"
+    kill' p (SignalStep sleep sig:t) = do
+      notice' $ "Sending " ++ (show sig) ++ " " ++ (show $ toSSignal sig)
+      internal' p TERM
+      
+      if kill
+        then do
+          dead <- waitack' state sleep
+          morekill' dead p t
+        else do
+          delay' sleep
+          notice' "Signals sent"
+
+    waitack' :: ProcessState -> Int -> IO Bool
+    waitack' _ 0 = return False
+    waitack' state delay = do
       dead <- isEmptyMVar $ terminate state
 
       if dead
         then return True
-        else threadDelay delay >> waitack' state delay (limit - 1)
+        else delay' 1 >> waitack' state (delay - 1)
 
     internal' :: ProcessHandle -> Signal -> IO ()
-    internal' handle sig =
+    internal' handle (sig) =
       withProcessHandle_ handle (\p -> case p of
         OpenHandle pid -> do
-          signalProcess sig pid
+          S.signalProcess (toSSignal sig) pid
           return $ OpenHandle pid)
 
 spawnProcess state = do
@@ -191,9 +225,9 @@ safeOpenHandle' name mode (Just path) =
       h <- openFile path mode
       return $ Just h)
     (\e -> do
-      syslog Error $ "Failed to open handle '" ++ name ++ "'"
+      L.syslog L.Error $ "Failed to open handle '" ++ name ++ "'"
       return Nothing)
 
 safeOpenHandle' name mode Nothing = do
-  syslog Error $ "Failed to open handle '" ++ name ++ "' (Nothing)"
+  L.syslog L.Error $ "Failed to open handle '" ++ name ++ "' (Nothing)"
   return Nothing

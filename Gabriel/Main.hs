@@ -32,10 +32,13 @@ import System.Posix.Signals
 import System.Posix.Syslog
 import System.Process
 
+defaultTerm :: [PS.SignalStep]
+defaultTerm = [PS.SignalStep 10 PS.TERM, PS.SignalStep 10 PS.KILL]
+
 handleSig :: PS.ProcessState -> S.Server -> IO ()
 handleSig state server = do
   PS.writeShutdown state True
-  PS.terminateProcess state
+  PS.signalProcess True state defaultTerm
   {- signal server, dirty but effective -}
   S.signal server
 
@@ -45,10 +48,14 @@ handlePacket state packet = do
   res <- (case packet of
     KillCommand -> (do
       PS.writeShutdown state True
-      PS.terminateProcess state
+      PS.signalProcess True state defaultTerm
+      return CommandOk)
+    SigCommand name -> (do
+      sig <- U.readM name PS.NONE
+      PS.signalProcess False state [PS.SignalStep 0 sig]
       return CommandOk)
     RestartCommand -> (do
-      PS.terminateProcess state
+      PS.signalProcess True state defaultTerm
       return CommandOk)
     CheckCommand -> do
       ph <- PS.readProcessHandle state
@@ -184,6 +191,14 @@ main = do
 
   when (optRestart opts) (do
     res <- S.clientPoll socketPath RestartCommand
+    case res of
+      CommandOk -> exitImmediately ExitSuccess
+      CommandError msg -> do
+        putStrLn $ msg
+        exitImmediately $ ExitFailure 1)
+
+  when (isJust $ optSig opts) (do
+    res <- S.clientPoll socketPath (SigCommand $ fromJust $ optSig opts)
     case res of
       CommandOk -> exitImmediately ExitSuccess
       CommandError msg -> do

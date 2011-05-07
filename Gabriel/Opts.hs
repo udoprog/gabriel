@@ -22,6 +22,7 @@ data Options = Options
  , optPidfile     :: Maybe FilePath
  , optSocket      :: Maybe FilePath
  , optName        :: Maybe String
+ , optSig         :: Maybe String
  , optRestartInt  :: Int
  , optEnviron     :: [(String, String)]
  } deriving Show
@@ -41,6 +42,7 @@ defaultOptions wd = Options
  , optPidfile     = Nothing
  , optSocket      = Nothing
  , optName        = Nothing
+ , optSig         = Nothing
  , optRestartInt  = 5
  , optEnviron     = []
  }
@@ -85,6 +87,9 @@ options =
  , Option []     ["name"]
      (ReqArg (\ f opts -> opts { optName = Just f }) "<name>")
      "Name of process to log to syslog"
+ , Option []     ["sig"]
+     (ReqArg (\ f opts -> opts { optSig = Just f }) "<signal>")
+     "Custom signal to send to child process"
  , Option ['E'] []
      (ReqArg (\ f opts -> opts { optEnviron = updateEnviron (optEnviron opts) f }) "<name>=<value>")
      "Update environment variable (can be used multiple times)"

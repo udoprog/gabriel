@@ -5,6 +5,7 @@ import Data.Binary
 
 data Command = UpdateCommand [String]
              | KillCommand
+             | SigCommand String
              | RestartCommand
              | CheckCommand
              | CommandOk
@@ -16,6 +17,7 @@ instance Binary Command where
     put (KillCommand) = putWord8 1
     put (RestartCommand) = putWord8 2
     put (CheckCommand) = putWord8 3
+    put (SigCommand s) = putWord8 4 >> put s
     put (CommandOk) = putWord8 128
     put (CommandError s) = putWord8 254 >> put s
 
@@ -26,5 +28,6 @@ instance Binary Command where
         1 -> return KillCommand
         2 -> return RestartCommand
         3 -> return CheckCommand
+        4 -> get >>= \s -> return (SigCommand s)
         128 -> return CommandOk
         254 -> get >>= \s -> return (CommandError s)

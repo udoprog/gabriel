@@ -1,4 +1,4 @@
-module Main where
+module Gabriel.Main where
 {-
  - This is Gabriel, the friendly system guardian
  - @author John-John Tedro

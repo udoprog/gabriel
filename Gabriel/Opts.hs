@@ -13,7 +13,7 @@ import Gabriel.Utils as U
 
 data Options = Options
  { optVerbose     :: Bool
- , optShowVersion :: Bool
+ , optVersion     :: Bool
  , optUpdate      :: Bool
  , optFg          :: Bool
  , optKill        :: Bool
@@ -36,7 +36,7 @@ data Options = Options
 
 defaultOptions wd = Options
  { optVerbose     = False
- , optShowVersion = False
+ , optVersion     = False
  , optUpdate      = False
  , optFg          = False
  , optKill        = False
@@ -62,7 +62,7 @@ options =
  [ Option ['v']     ["verbose"]
      (NoArg (\ opts -> opts { optVerbose = True })) "chatty output on stderr"
  , Option ['V','?'] ["version"]
-     (NoArg (\ opts -> opts { optShowVersion = True })) "show version number"
+     (NoArg (\ opts -> opts { optVersion = True })) "show version number"
  , Option ['u'] ["update"]
      (NoArg (\ opts -> opts { optUpdate = True })) "update the running command"
  , Option [] ["kill"]

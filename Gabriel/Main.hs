@@ -47,32 +47,31 @@ handleSig pattern state server = do
 handlePacket :: [PS.SignalStep] -> PS.ProcessState -> Command -> IO Command
 handlePacket pattern state packet = do
   syslog Notice $ "(unix socket) Got " ++ (show packet)
+  h' packet
 
-  res <- (case packet of
-    KillCommand -> (do
+  where
+    h' KillCommand        = do
       PS.writeShutdown state True
       PS.signalProcess True state pattern
-      return CommandOk)
-    SigCommand name -> (do
+      return CommandOk
+    h' (SigCommand name)  = do
       let sig = U.readM name PS.NONE
       PS.signalProcess False state [PS.SignalStep 0 sig]
-      return CommandOk)
-    RestartCommand -> (do
+      return CommandOk
+    h' RestartCommand     = do
       PS.signalProcess True state pattern
-      return CommandOk)
-    CheckCommand -> do
+      return CommandOk
+    h' CheckCommand       = do
       ph <- PS.readProcessHandle state
       case ph of
         Just p -> return CommandOk
         Nothing -> return $ CommandError "Process is not running"
-    _ -> do
-      syslog Notice $ "NOT HANDLED YET"
-      return (CommandError "Command not handled"))
+    h' p                  = do
+      syslog Notice $ "Command not handled: " ++ (show p)
+      return $ CommandError "Command not handled"
 
-  return res
-
-setupProcess :: Options -> [String] -> IO ()
-setupProcess opts args = do
+process :: Options -> [String] -> IO ()
+process opts args = do
   withSyslog ("gabriel[" ++ (processName opts args) ++ "]") [PID, PERROR] DAEMON $ do
     state <- PS.newProcessState
       (optStdout opts)
@@ -89,14 +88,11 @@ setupProcess opts args = do
     
     PS.writeProcessCommand state args
 
-    let serverHandle = handlePacket pattern state
+    server <- S.server socketPath $ handlePacket pattern state
 
-    server <- S.server socketPath serverHandle
-
-    let sigHandler = CatchOnce $ handleSig pattern state server
-
-    installHandler sigTERM sigHandler Nothing
-    installHandler sigINT  sigHandler Nothing
+    let signalHandler = CatchOnce $ handleSig pattern state server
+    installHandler sigTERM signalHandler Nothing
+    installHandler sigINT  signalHandler Nothing
 
     {-Officially tell the mainloop to handle business as good as it can, no guarantees-}
     forkIO $ mainloop state
@@ -185,7 +181,7 @@ main = do
   when (optVerbose opts) (do
     print opts)
 
-  when (optShowVersion opts) (do
+  when (optVersion opts) (do
     putStrLn "Gabriel, the process guardian version 0.1"
     exitImmediately ExitSuccess)
 
@@ -213,7 +209,7 @@ main = do
   exists <- doesFileExist pidfile
   when exists $ ioError (userError $ "Pid file exists " ++ (show pidfile))
 
-  let proc = catch (setupProcess opts args)
+  let proc = catch (process opts args)
                    (\e -> syslog Error $ "Process Failed: " ++ (show e))
 
   if (optFg opts)
@@ -224,9 +220,11 @@ main = do
     handleCommand socket command = do
       res <- S.clientPoll socket command
       case res of
-        CommandOk -> exitImmediately ExitSuccess
+        CommandOk -> do
+          putStrLn $ "gabriel: Ok"
+          exitImmediately ExitSuccess
         CommandError msg -> do
-          putStrLn $ "CommandError: " ++ msg
+          putStrLn $ "gabriel: Error: " ++ msg
           exitImmediately $ ExitFailure 1
 
     {-

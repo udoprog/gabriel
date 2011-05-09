@@ -1,12 +1,12 @@
 module Gabriel.Concurrent where
 
 import Control.Concurrent.MVar (tryTakeMVar, MVar)
-import Control.Concurrent (threadDelay)
+import qualified Control.Concurrent as C
 
-controlledThreadDelay :: Int -> (IO Bool) -> Int -> IO Bool
-controlledThreadDelay _     _    0     = return False
-controlledThreadDelay sleep lock limit = do
-  free <- lock
-  if free then return True else (do
-    threadDelay sleep
-    controlledThreadDelay sleep lock (limit - 1))
+threadDelay         :: IO Bool -> Int -> IO Bool
+threadDelay _    0  = return False
+threadDelay lock s  = do
+    free <- lock
+    if free
+      then return True
+      else C.threadDelay 1000000 >> threadDelay lock (s - 1)

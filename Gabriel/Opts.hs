@@ -1,5 +1,7 @@
 module Gabriel.Opts (readOptions, updateOptions, Options(..)) where
 
+import System.Posix.User
+import System.Posix.Types
 import System.Console.GetOpt
 import System.FilePath
 import System.Directory
@@ -25,6 +27,8 @@ data Options = Options
  , optSocket      :: Maybe FilePath
  , optName        :: Maybe String
  , optSig         :: Maybe String
+ , optUser        :: Maybe String
+ , optGroup       :: Maybe String
  , killPattern    :: Maybe [PS.SignalStep]
  , optRestartInt  :: Int
  , optEnviron     :: [(String, String)]
@@ -46,6 +50,8 @@ defaultOptions wd = Options
  , optSocket      = Nothing
  , optName        = Nothing
  , optSig         = Nothing
+ , optUser        = Nothing
+ , optGroup       = Nothing
  , killPattern    = Nothing
  , optRestartInt  = 5
  , optEnviron     = []
@@ -94,6 +100,12 @@ options =
  , Option []     ["sig"]
      (ReqArg (\ f opts -> opts { optSig = Just f }) "<signal>")
      "Custom signal to send to child process"
+ , Option []     ["user"]
+     (ReqArg (\ f opts -> opts { optUser = Just f }) "<user>")
+     "Run the program as the effective user <user>"
+ , Option []     ["group"]
+     (ReqArg (\ f opts -> opts { optGroup = Just f }) "<group>")
+     "Run the command as the effective group <group>"
  , Option []     ["kill-pattern"]
      (ReqArg (\ f opts -> opts { killPattern = Just $ parseKillPattern f }) "<pattern>")
      "A wait-and-signal pattern, like HUP:10:KILL which will be used to terminate the process"
@@ -124,7 +136,7 @@ parseKillPattern s = toSignalSteps $ split' s ':'
 
 updateOptions :: Options -> IO Options
 updateOptions opts = do
-  cmd <-  (canon wd (optCommand opts)  "command")
+  cmd  <-  (canon wd (optCommand opts)  "command")
   out  <- (canon wd (optStdout opts)  "out")
   err  <- (canon wd (optStderr opts)  "err")
   pid  <- (canon wd (optPidfile opts) "pid")

@@ -28,6 +28,8 @@ import System.Posix.Daemonize
 import System.Posix.Directory
 import System.Posix.Process
 import System.Posix.Files
+import System.Posix.Types
+import System.Posix.User
 import System.Posix.Signals
 import System.Posix.Syslog
 import System.Process
@@ -71,28 +73,30 @@ handlePacket pattern state packet = do
 
 setupProcess :: Options -> [String] -> IO ()
 setupProcess opts args = do
-  withSyslog ("gabriel[" ++ (processName opts args) ++ "]") [PID, PERROR] USER $ do
+  withSyslog ("gabriel[" ++ (processName opts args) ++ "]") [PID, PERROR] DAEMON $ do
     state <- PS.newProcessState
       (optStdout opts)
       (optStderr opts)
       (optRestartInt opts)
       (optCommand opts)
 
-    let server = handlePacket pattern state
-
     pid    <- getProcessID
-    server <- S.server socketPath server
 
-    let sigHandler = handleSig pattern state server
+    catch (writeFile pidfile (show pid))
+      (\e -> syslog Error $ "Could not write pid to file - " ++ (show e))
 
-    catch (writeFile pidfile (show pid)) (\e -> syslog Error $ "Could not write pid to file - " ++ (show e))
+    changeWorkingDirectory (optCwd opts)
     
     PS.writeProcessCommand state args
 
-    changeWorkingDirectory (optCwd opts)
+    let serverHandle = handlePacket pattern state
 
-    installHandler sigTERM (CatchOnce $ sigHandler) Nothing
-    installHandler sigINT  (CatchOnce $ sigHandler) Nothing
+    server <- S.server socketPath serverHandle
+
+    let sigHandler = CatchOnce $ handleSig pattern state server
+
+    installHandler sigTERM sigHandler Nothing
+    installHandler sigINT  sigHandler Nothing
 
     {-Officially tell the mainloop to handle business as good as it can, no guarantees-}
     forkIO $ mainloop state
@@ -105,7 +109,7 @@ setupProcess opts args = do
       (\e -> syslog Error $ "Could not close and remove socket: " ++ (show e))
     
     catch (removeFile pidfile)
-      (\e -> syslog Error $ "Could not remove pid file: " ++ (show e))
+      (\e -> syslog Error $ "Could not remove pidfile: " ++ (show e))
 
   where
     pattern :: [PS.SignalStep]
@@ -144,33 +148,28 @@ mainloop state = do
    -}
   terminate <- PS.takeTerminate state
 
+  {-Determine what to log-}
   case terminate of
     Just _ ->  do
       syslog Debug "Process terminated"
     Nothing -> do
-      syslog Debug "Process unexpectedly exited"
+      syslog Debug "Process unexpectedly terminated"
  
-  delay <- delayTime
+  delay <- PS.readDelay state
 
   shutdown <-
     if (not shutdown && delay > 0)
-      then (do
-        delay' state
-        PS.readShutdown state)
-      else
-        return shutdown
+      then delay' delay >> PS.readShutdown state
+      else return shutdown
 
   if shutdown
     then return ()
     else mainloop state
 
   where
-    delayTime = PS.readDelay state
-
-    delay' state = do
-      delay <- delayTime
+    delay' delay = do
       syslog Notice $ "WAITING " ++ (show delay) ++ " seconds";
-      wasInterrupted <- C.controlledThreadDelay 1000000 (PS.readShutdown state) delay
+      wasInterrupted <- C.threadDelay (PS.readShutdown state) delay
       when (wasInterrupted) (syslog Notice "WAIT was Interrupted")
       return ()
 
@@ -190,74 +189,59 @@ main = do
     putStrLn "Gabriel, the process guardian version 0.1"
     exitImmediately ExitSuccess)
 
-  let socketPath = fromJust $ optSocket opts
+  let handleCommandS = handleCommand (fromJust $ optSocket opts)
 
-  when (optKill opts) (do
-    res <- S.clientPoll socketPath KillCommand
-    case res of
-      CommandOk -> exitImmediately ExitSuccess
-      CommandError msg -> do
-        putStrLn $ msg
-        exitImmediately $ ExitFailure 1)
-
-
-  when (optRestart opts) (do
-    res <- S.clientPoll socketPath RestartCommand
-    case res of
-      CommandOk -> exitImmediately ExitSuccess
-      CommandError msg -> do
-        putStrLn $ msg
-        exitImmediately $ ExitFailure 1)
-
-  when (isJust $ optSig opts) (do
-    res <- S.clientPoll socketPath (SigCommand $ fromJust $ optSig opts)
-    case res of
-      CommandOk -> exitImmediately ExitSuccess
-      CommandError msg -> do
-        putStrLn $ msg
-        exitImmediately $ ExitFailure 1)
-
-  when (optCheck opts) (do
-    res <- S.clientPoll socketPath CheckCommand
-    case res of
-      CommandOk -> do
-        putStrLn $ "Process is OK"
-        exitImmediately ExitSuccess
-      CommandError msg -> do
-        putStrLn $ msg
-        exitImmediately $ ExitFailure 1)
+  when (optRestart opts)  $ handleCommandS RestartCommand
+  when (optKill opts)     $ handleCommandS KillCommand 
+  when (optCheck opts)    $ handleCommandS CheckCommand
+  onJust (optSig opts) (\sig -> handleCommandS $ SigCommand sig)
 
   args <- readArgs args (optCommand opts)
 
   when ((length args) < 1) (do
     ioError $ userError "Too few arguments, requires program after '--'")
 
-  when (optUpdate opts) (do
-    let packet = UpdateCommand args
-    res <- S.clientPoll socketPath packet
-    case res of
-      CommandOk -> exitImmediately ExitSuccess
-      CommandError msg -> do
-        putStrLn $ msg
-        exitImmediately $ ExitFailure 1)
+  when (optUpdate opts) $ handleCommandS $ UpdateCommand args
 
-  -- sanity checking of the process parameters
+  {-Set group id-}
+  onJust (optGroup opts) (\group -> readGroup group >>= setGroupID)
+  {-Set user id-}
+  onJust (optUser opts) (\user -> readUser user >>= setUserID)
+
+  {-sanity checking of the process parameters-}
   let pidfile = fromJust $ optPidfile opts
-  pidfileExists <- doesFileExist pidfile
-  when pidfileExists $ ioError (userError $ "Pid file exists " ++ (show pidfile))
+  exists <- doesFileExist pidfile
+  when exists $ ioError (userError $ "Pid file exists " ++ (show pidfile))
+
+  let proc = catch (setupProcess opts args)
+                   (\e -> syslog Error $ "Process Failed: " ++ (show e))
 
   if (optFg opts)
-    then (setupProcess opts args)
-    else (daemonize $ setupProcess opts args)
+    then proc
+    else daemonize proc
 
   where
-    readArgs :: [String] -> Maybe FilePath -> IO [String]
-    readArgs args path = do
-      if ((length args) < 1)
-        then do
-          args <- PS.readCommand path
-          return args
-        else
-          return args
-        
+    handleCommand socket command = do
+      res <- S.clientPoll socket command
+      case res of
+        CommandOk -> exitImmediately ExitSuccess
+        CommandError msg -> do
+          putStrLn $ "CommandError: " ++ msg
+          exitImmediately $ ExitFailure 1
 
+    {-
+     - either use existing arguments, or attempt to read from file.
+     -}
+    readArgs            :: [String] -> Maybe FilePath -> IO [String]
+    readArgs [] path    = PS.readCommand path >>= return
+    readArgs args path  = return args
+
+    onJust                  :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
+    onJust (Just j) action  = action j
+    onJust Nothing  _       = return ()
+
+    readUser      :: String -> IO UserID
+    readUser user = getUserEntryForName user >>= return . userID
+
+    readGroup       :: String -> IO GroupID
+    readGroup group = getGroupEntryForName group >>= return . groupID

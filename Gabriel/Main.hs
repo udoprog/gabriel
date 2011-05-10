@@ -39,7 +39,7 @@ defaultKillPattern = [PS.SignalStep 10 PS.TERM, PS.SignalStep 10 PS.KILL]
 
 handleSig :: [PS.SignalStep] -> PS.ProcessState -> S.Server -> IO ()
 handleSig pattern state server = do
-  PS.writeShutdown state True
+  PS.setShutdown state
   PS.signalProcess True state pattern
   {- signal server, dirty but effective -}
   S.signal server
@@ -51,7 +51,7 @@ handlePacket pattern state packet = do
 
   where
     h' KillCommand        = do
-      PS.writeShutdown state True
+      PS.setShutdown state
       PS.signalProcess True state pattern
       return CommandOk
     h' (SigCommand name)  = do
@@ -62,7 +62,7 @@ handlePacket pattern state packet = do
       PS.signalProcess True state pattern
       return CommandOk
     h' CheckCommand       = do
-      ph <- PS.readProcessHandle state
+      ph <- PS.getHandle state
       case ph of
         Just p -> return CommandOk
         Nothing -> return $ CommandError "Process is not running"
@@ -97,6 +97,10 @@ process opts args = do
     {-Officially tell the mainloop to handle business as good as it can, no guarantees-}
     forkIO $ mainloop state
 
+    when (isJust $ heartBeat opts) (do
+      forkIO $ heartbeat pattern state (fromJust $ heartBeat opts) (heartBeatInt opts)
+      return ())
+
     {-Let the socket govern if we should shutdown, S.signal server will also
      - cause a shutdown-}
     S.waitFor server
@@ -123,6 +127,47 @@ process opts args = do
 
     socketPath :: FilePath
     socketPath = fromJust $ optSocket opts
+
+{-
+ - Run the heartbeat process, which performs several steps.
+ -
+ - Run /bin/sh -c "command"
+ -
+ - If exitCode is Failure, restart the managed process (signal)
+ -
+ - Execute a delay of heartbeat-interval.
+ -
+ - If shutdown, end execution. Otherwise continue.
+ -}
+heartbeat :: [PS.SignalStep] -> PS.ProcessState -> String -> Int ->  IO ()
+heartbeat pattern state command sleep = do
+  syslog Notice $ "HEARTBEAT: " ++ (show command)
+
+  let args = ["/bin/sh", "-c", command]
+
+  let cp = (proc (head args) (tail args)) {
+        std_in  = CreatePipe
+      , std_out = Inherit
+      , std_err = Inherit }
+
+  (Just s, _, _, p) <- createProcess cp
+  hClose s
+  exitCode <- waitForProcess p
+
+  case exitCode of
+    ExitSuccess   -> return ()
+    ExitFailure c -> do
+      syslog Notice $ "HEARTBEAT: " ++ (show c)
+      PS.signalProcess True state pattern
+      return ()
+
+  C.threadDelay (PS.isShutdown state) sleep
+
+  shutdown <- PS.isShutdown state
+
+  if shutdown
+    then return()
+    else heartbeat pattern state command sleep
     
 mainloop :: PS.ProcessState -> IO ()
 mainloop state = do
@@ -130,32 +175,38 @@ mainloop state = do
 
   syslog Notice $ "Running " ++ (U.formatProcessName args " ")
 
-  exitCode <- PS.spawnProcess state
+  outPath <- PS.readStdout state
+  errPath <- PS.readStderr state
+
+  (out, err) <- safeOpenHandles' outPath errPath
+
+  let cp = (proc (head args) (tail args)){
+        std_in  = CreatePipe
+      , std_out = out
+      , std_err = err }
+
+  (Just s, _, _, p) <- createProcess cp
+
+  PS.setHandle state p
+  exitCode <- waitForProcess p
+  hClose s
+  PS.clearHandle state
 
   syslog Notice $ "Process exited " ++ (show exitCode)
 
-  {-
-   - Needs to close this here, otherwise pipe will probably be GCed and closed.
-   -}
-  shutdown <- PS.readShutdown state
+  shutdown <- PS.isShutdown state
 
-  {-
-   - This termination was the result of an explicit termination
-   -}
-  terminate <- PS.takeTerminate state
+  t <- PS.isKilled state
 
-  {-Determine what to log-}
-  case terminate of
-    Just _ ->  do
-      syslog Debug "Process terminated"
-    Nothing -> do
-      syslog Debug "Process unexpectedly terminated"
+  let msg = if t then "Process Terminated" else "Process unexpectedly terminated"
+  
+  syslog Debug msg
  
   delay <- PS.readDelay state
 
   shutdown <-
     if (not shutdown && delay > 0)
-      then delay' delay >> PS.readShutdown state
+      then delay' delay >> PS.isShutdown state
       else return shutdown
 
   if shutdown
@@ -165,9 +216,17 @@ mainloop state = do
   where
     delay' delay = do
       syslog Notice $ "WAITING " ++ (show delay) ++ " seconds";
-      wasInterrupted <- C.threadDelay (PS.readShutdown state) delay
+      wasInterrupted <- C.threadDelay (PS.isShutdown state) delay
       when (wasInterrupted) (syslog Notice "WAIT was Interrupted")
       return ()
+
+    safeOpenHandles' outPath errPath = do
+      out <- PS.openHandle "stdout" AppendMode outPath
+      err <- PS.openHandle "stderr" AppendMode errPath
+      return (convert' out, convert' err)
+
+      where
+        convert' handle = (case handle of Nothing -> Inherit; Just h -> UseHandle h)
 
 main :: IO ()
 main = do

@@ -12,26 +12,28 @@ import Gabriel.ProcessState as PS
 import Gabriel.Utils as U
 
 data Options = Options
- { optVerbose     :: Bool
- , optVersion     :: Bool
- , optUpdate      :: Bool
- , optFg          :: Bool
- , optKill        :: Bool
- , optCheck       :: Bool
- , optRestart     :: Bool
- , optCwd         :: FilePath
- , optCommand     :: Maybe FilePath
- , optStdout      :: Maybe FilePath
- , optStderr      :: Maybe FilePath
- , optPidfile     :: Maybe FilePath
- , optSocket      :: Maybe FilePath
- , optName        :: Maybe String
- , optSig         :: Maybe String
- , optUser        :: Maybe String
- , optGroup       :: Maybe String
- , killPattern    :: Maybe [PS.SignalStep]
- , optRestartInt  :: Int
- , optEnviron     :: [(String, String)]
+ { optVerbose    :: Bool
+ , optVersion    :: Bool
+ , optUpdate     :: Bool
+ , optFg         :: Bool
+ , optKill       :: Bool
+ , optCheck      :: Bool
+ , optRestart    :: Bool
+ , optCwd        :: FilePath
+ , optCommand    :: Maybe FilePath
+ , optStdout     :: Maybe FilePath
+ , optStderr     :: Maybe FilePath
+ , optPidfile    :: Maybe FilePath
+ , optSocket     :: Maybe FilePath
+ , optName       :: Maybe String
+ , optSig        :: Maybe String
+ , optUser       :: Maybe String
+ , optGroup      :: Maybe String
+ , killPattern   :: Maybe [PS.SignalStep]
+ , heartBeat     :: Maybe String
+ , heartBeatInt  :: Int
+ , optRestartInt :: Int
+ , optEnviron    :: [(String, String)]
  } deriving Show
 
 defaultOptions wd = Options
@@ -53,6 +55,8 @@ defaultOptions wd = Options
  , optUser        = Nothing
  , optGroup       = Nothing
  , killPattern    = Nothing
+ , heartBeat      = Nothing
+ , heartBeatInt   = 60
  , optRestartInt  = 5
  , optEnviron     = []
  }
@@ -106,6 +110,15 @@ options =
  , Option []     ["group"]
      (ReqArg (\ f opts -> opts { optGroup = Just f }) "<group>")
      "Run the command as the effective group <group>"
+ , Option []     ["kill-pattern"]
+     (ReqArg (\ f opts -> opts { killPattern = Just $ parseKillPattern f }) "<pattern>")
+     "A wait-and-signal pattern, like HUP:10:KILL which will be used to terminate the process"
+ , Option []     ["heartbeat"]
+     (ReqArg (\ f opts -> opts { heartBeat = Just f }) "<command>")
+     "Command to execute as heartbeat check, will be run by /bin/sh"
+ , Option []     ["heartbeat-interval"]
+     (ReqArg (\ f opts -> opts { heartBeatInt = read f }) "<seconds>")
+     "Seconds in which to execute heartbeat check"
  , Option []     ["kill-pattern"]
      (ReqArg (\ f opts -> opts { killPattern = Just $ parseKillPattern f }) "<pattern>")
      "A wait-and-signal pattern, like HUP:10:KILL which will be used to terminate the process"

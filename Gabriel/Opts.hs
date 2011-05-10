@@ -44,7 +44,7 @@ defaultOptions wd = Options
  , optKill        = False
  , optCheck       = False
  , optRestart     = False
- , optCwd         = wd
+ , optCwd         = ""
  , optCommand     = Nothing
  , optStdout      = Nothing
  , optStderr      = Nothing
@@ -149,13 +149,17 @@ parseKillPattern s = toSignalSteps $ split' s ':'
 
 updateOptions :: Options -> IO Options
 updateOptions opts = do
-  cmd  <-  (canon wd (optCommand opts)  "command")
-  out  <- (canon wd (optStdout opts)  "out")
-  err  <- (canon wd (optStderr opts)  "err")
-  pid  <- (canon wd (optPidfile opts) "pid")
-  sock <- (canon wd (optSocket opts)  "sock")
+  wd <- getCurrentDirectory
+
+  let cwd  = joinPath [wd, optCwd opts]
+  let cmd  = (canon wd cwd (optCommand opts) "command")
+  let out  = (canon wd cwd (optStdout  opts) "out")
+  let err  = (canon wd cwd (optStderr  opts) "err")
+  let pid  = (canon wd cwd (optPidfile opts) "pid")
+  let sock = (canon wd cwd (optSocket  opts) "sock")
 
   return opts {
+    optCwd     = cwd,
     optCommand = Just cmd,
     optStdout  = Just out,
     optStderr  = Just err,
@@ -163,15 +167,12 @@ updateOptions opts = do
     optSocket  = Just sock
   }
   where
-    wd = optCwd opts
     oldOrJust val optional = (case val of
       Nothing -> optional
       Just v  -> v)
-    canon :: FilePath -> Maybe FilePath -> String -> IO FilePath
-    canon wd path def = do
-      canonicalizePath (case path of
-        Just p -> p
-        Nothing -> joinPath [wd, def])
+    canon :: FilePath -> FilePath -> Maybe FilePath -> String -> FilePath
+    canon wd _  (Just p) def = joinPath [wd, p]
+    canon _  wd Nothing  def = joinPath [wd, def]
 
 readOptions :: [String] -> FilePath -> IO (Options, [String])
 readOptions argv workingDirectory = do

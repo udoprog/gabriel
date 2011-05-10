@@ -79,13 +79,13 @@ process opts args = do
       (optRestartInt opts)
       (optCommand opts)
 
+    changeWorkingDirectory (optCwd opts)
+
     pid    <- getProcessID
 
     catch (writeFile pidfile (show pid))
       (\e -> syslog Error $ "Could not write pid to file - " ++ (show e))
 
-    changeWorkingDirectory (optCwd opts)
-    
     PS.writeProcessCommand state args
 
     server <- S.server socketPath $ handlePacket pattern state
@@ -100,7 +100,7 @@ process opts args = do
     when (isJust $ heartBeat opts) (do
       forkIO $ heartbeatHandle pattern state (fromJust $ heartBeat opts) (heartBeatInt opts)
       return ())
-
+    
     {-Let the socket govern if we should shutdown, S.signal server will also
      - cause a shutdown-}
     S.waitFor server

@@ -1,11 +1,10 @@
-module Gabriel.ProcessState( 
-    ProcessState
+module Gabriel.ProcessState
+  ( ProcessState
   , SignalStep(..)
   , Signal(..)
   , newProcessState
   , isKilled
   , setKilled
-  , readCommand
   , readDelay
   , readProcessCommand
   , getHandle
@@ -15,27 +14,24 @@ module Gabriel.ProcessState(
   , readStdout
   , readStderr
   , signalProcess
-  , writeCommand
+  , killProcess
   , writeDelay
   , writeProcessCommand
   , setShutdown
-  , openHandle
-) where
+  ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
 import Control.Monad (when)
-
-import Data.Maybe (isJust, fromJust)
-
-import System.IO
+import Data.Maybe
 import System.Exit (ExitCode)
-import qualified System.Posix.Signals as S
-import qualified System.Posix.Syslog as L
 import System.Process
 import System.Process.Internals (withProcessHandle_, ProcessHandle__(OpenHandle))
+import qualified System.Posix.Signals as S
+import qualified System.Posix.Syslog as L
+import qualified System.IO as IO
 
 import Gabriel.Utils as U
 
@@ -58,11 +54,11 @@ data ProcessState = ProcessState
 
 data Signal = KILL | HUP | TERM | NONE deriving (Show, Read)
 
-toSSignal :: Signal -> S.Signal
-toSSignal KILL = S.sigKILL
-toSSignal HUP  = S.sigHUP
-toSSignal TERM = S.sigTERM
-toSSignal NONE = 0
+toSSignal       :: Signal -> S.Signal
+toSSignal KILL  = S.sigKILL
+toSSignal HUP   = S.sigHUP
+toSSignal TERM  = S.sigTERM
+toSSignal NONE  = 0
 
 data SignalStep = SignalStep Int Signal deriving (Show)
 
@@ -104,129 +100,76 @@ clearHandle state = atomically $ writeTVar (processHandle state) Nothing
 
 readProcessCommand state = atomically $ readTVar $ processCommand state
 writeProcessCommand state command = do
-  writeCommand (commandPath state) command
+  U.putArray "command" (commandPath state) command
   atomically $ writeTVar (processCommand state) command
 
 readStdout state = atomically $ readTVar $ stdOut state
 readStderr state = atomically $ readTVar $ stdErr state
 
-writeCommand path command = do
-  handle <- openHandle "command" WriteMode path
-  (case handle of
-    Just h -> (do
-      coerce' h command
-      hClose h)
-    Nothing -> return ())
-  where
-    coerce' h [] = hClose h
-    coerce' h [s] = do
-      hPutStr h s
-      coerce' h []
-    coerce' h (s:t) = do
-      hPutStr h s
-      hPutChar h '\0'
-      coerce' h t
-
-readCommand :: Maybe FilePath -> IO [String]
-readCommand path = do
-  handle <- openHandle "command" ReadMode path
-  (case handle of
-    Just h -> (do
-      coerce' h [] "")
-    Nothing -> return [])
-  where
-    coerce' h a s =
-      catch (do
-        c <- hGetChar h
-
-        r <- (if (c == '\0')
-          then (coerce' h (a ++ [s])  "")
-          else (coerce' h a           (s ++ [c])))
-
-        return r)
-      (\e -> return $ a ++ [s])
-
 readDelay state = atomically $ readTVar $ delay state
 writeDelay state value = atomically $ writeTVar (delay state) value
 
-{-
- - Signal the process signified by ProcessState if it is available.
- -}
-signalProcess :: Bool -> ProcessState -> [SignalStep] -> IO Bool
-signalProcess kill state steps 
-  | kill      = onPid' state (\p -> setKilled state >> kill' p steps >>= return)
-  | otherwise = onPid' state (\p -> sig' p steps >> return True)
+internalSignal :: ProcessHandle -> Signal -> IO ()
+internalSignal handle (sig) = do
+  L.syslog L.Notice $ "Sending " ++ (show sig) ++ " " ++ (show $ toSSignal sig)
+  withProcessHandle_ handle (\p -> case p of
+    OpenHandle pid -> do
+      S.signalProcess (toSSignal sig) pid
+      return $ OpenHandle pid)
+
+onPid' :: ProcessState -> (ProcessHandle -> IO a) -> (IO a) -> IO a
+onPid' state action nopid = do
+  pid <- getHandle state
+  case pid of
+    Nothing -> nopid
+    Just  p -> action p
+
+killProcess :: ProcessState -> [SignalStep] -> IO ()
+killProcess state steps =
+  onPid' state
+    (\p -> sig' p steps)
+    (L.syslog L.Notice "No process running")
+  where
+    {-Just signal the process.-}
+    sig' :: ProcessHandle -> [SignalStep] -> IO ()
+    sig' _ []    = do
+      L.syslog L.Notice "All signals sent"
+    sig' p (SignalStep sleep sig:t) = do
+      internalSignal p sig
+      sig' p t
+
+{-Signal the process signified by ProcessState if it is available.-}
+signalProcess :: ProcessState -> [SignalStep] -> IO Bool
+signalProcess state steps =
+  onPid' state
+    (\p -> setKilled state >> kill' p steps >>= return)
+    (L.syslog L.Notice "No process running" >> return False)
 
   where
-    notice' :: String -> IO ()
-    notice' msg = L.syslog L.Notice msg
-
     delay' seconds = threadDelay (1000000 * seconds)
 
-    onPid' :: ProcessState -> (ProcessHandle -> IO Bool) -> IO Bool
-    onPid' state action = do
-      pid <- getHandle state
-      case pid of
-        Nothing -> notice' "No process running" >> return False
-        Just  p -> action p
-
-    {-
-     - Signal the process, expecting it to die.
-     -}
+    {-Signal the process, expecting it to die.-}
     kill' :: ProcessHandle -> [SignalStep] -> IO Bool
     kill' _ [] = do
-      notice' "No more steps to try"
+      L.syslog L.Notice "No more steps to try"
       return False
     kill' p (SignalStep sleep sig:t) = do
-      internal' p sig
+      internalSignal p sig
 
-      notice' $ "Waiting for " ++ (show sleep) ++ " seconds"
-      dead <- waitOrTimeout' state sleep
+      L.syslog L.Notice $ "Waiting for " ++ (show sleep) ++ " seconds"
+      dead <- wait' state sleep
 
       if dead
         then do
-          notice' $ "Process has been killed"
+          L.syslog L.Notice $ "Process has been killed"
           return True
         else kill' p t
       where
-        waitOrTimeout' :: ProcessState -> Int -> IO Bool
-        waitOrTimeout' _ 0 = return False
-        waitOrTimeout' state delay = do
+        wait'             :: ProcessState -> Int -> IO Bool
+        wait' _ 0         = return False
+        wait' state delay = do
           dead <- isEmptyMVar $ killed state
           L.syslog L.Debug "Sleeping for one second"
           if dead
             then return True
-            else delay' 1 >> waitOrTimeout' state (delay - 1)
-
-    {-
-     - Just signal the process.
-     -}
-    sig' :: ProcessHandle -> [SignalStep] -> IO ()
-    sig' _ []    = do
-      notice' "All signals sent"
-    sig' p (SignalStep sleep sig:t) = do
-      internal' p sig
-      sig' p t
-
-    internal' :: ProcessHandle -> Signal -> IO ()
-    internal' handle (sig) = do
-      notice' $ "Sending " ++ (show sig) ++ " " ++ (show $ toSSignal sig)
-      withProcessHandle_ handle (\p -> case p of
-        OpenHandle pid -> do
-          S.signalProcess (toSSignal sig) pid
-          return $ OpenHandle pid)
-
-{-Open a handle safely, logging errors and returning Nothing-}
-openHandle name mode (Just path) = 
-  {- Open the handle, or Nothing if an exception is raised -}
-  catch
-    (do
-      h <- openFile path mode
-      return $ Just h)
-    (\e -> do
-      L.syslog L.Error $ "Failed to open handle '" ++ name ++ "'"
-      return Nothing)
-
-openHandle name mode Nothing = do
-  L.syslog L.Error $ "Failed to open handle '" ++ name ++ "' (Nothing)"
-  return Nothing
+            else delay' 1 >> wait' state (delay - 1)

@@ -40,7 +40,7 @@ defaultKillPattern = [PS.SignalStep 10 PS.TERM, PS.SignalStep 10 PS.KILL]
 handleSig :: [PS.SignalStep] -> PS.ProcessState -> S.Server -> IO ()
 handleSig pattern state server = do
   PS.setShutdown state
-  PS.signalProcess True state pattern
+  PS.killProcess state pattern
   {- signal server, dirty but effective -}
   S.signal server
 
@@ -52,14 +52,14 @@ handlePacket pattern state packet = do
   where
     h' KillCommand        = do
       PS.setShutdown state
-      PS.signalProcess True state pattern
+      PS.killProcess state pattern
       return CommandOk
     h' (SigCommand name)  = do
       let sig = U.readM name PS.NONE
-      PS.signalProcess False state [PS.SignalStep 0 sig]
+      PS.signalProcess state [PS.SignalStep 0 sig]
       return CommandOk
     h' RestartCommand     = do
-      PS.signalProcess True state pattern
+      PS.killProcess state pattern
       return CommandOk
     h' CheckCommand       = do
       ph <- PS.getHandle state
@@ -98,7 +98,7 @@ process opts args = do
     forkIO $ mainloop state
 
     when (isJust $ heartBeat opts) (do
-      forkIO $ heartbeat pattern state (fromJust $ heartBeat opts) (heartBeatInt opts)
+      forkIO $ heartbeatHandle pattern state (fromJust $ heartBeat opts) (heartBeatInt opts)
       return ())
 
     {-Let the socket govern if we should shutdown, S.signal server will also
@@ -139,8 +139,8 @@ process opts args = do
  -
  - If shutdown, end execution. Otherwise continue.
  -}
-heartbeat :: [PS.SignalStep] -> PS.ProcessState -> String -> Int ->  IO ()
-heartbeat pattern state command sleep = do
+heartbeatHandle :: [PS.SignalStep] -> PS.ProcessState -> String -> Int ->  IO ()
+heartbeatHandle pattern state command sleep = do
   syslog Notice $ "HEARTBEAT: " ++ (show command)
 
   let args = ["/bin/sh", "-c", command]
@@ -158,7 +158,7 @@ heartbeat pattern state command sleep = do
     ExitSuccess   -> return ()
     ExitFailure c -> do
       syslog Notice $ "HEARTBEAT: " ++ (show c)
-      PS.signalProcess True state pattern
+      PS.killProcess state pattern
       return ()
 
   C.threadDelay (PS.isShutdown state) sleep
@@ -167,7 +167,7 @@ heartbeat pattern state command sleep = do
 
   if shutdown
     then return()
-    else heartbeat pattern state command sleep
+    else heartbeatHandle  pattern state command sleep
     
 mainloop :: PS.ProcessState -> IO ()
 mainloop state = do
@@ -175,10 +175,8 @@ mainloop state = do
 
   syslog Notice $ "Running " ++ (U.formatProcessName args " ")
 
-  outPath <- PS.readStdout state
-  errPath <- PS.readStderr state
-
-  (out, err) <- safeOpenHandles' outPath errPath
+  out <- PS.readStdout state >>= U.openFileM "stdout" AppendMode >>= convert'
+  err <- PS.readStderr state >>= U.openFileM "stderr" AppendMode >>= convert'
 
   let cp = (proc (head args) (tail args)){
         std_in  = CreatePipe
@@ -192,7 +190,7 @@ mainloop state = do
   hClose s
   PS.clearHandle state
 
-  syslog Notice $ "Process exited " ++ (show exitCode)
+  syslog Notice $ "Process exited with code " ++ (show exitCode)
 
   shutdown <- PS.isShutdown state
 
@@ -220,13 +218,8 @@ mainloop state = do
       when (wasInterrupted) (syslog Notice "WAIT was Interrupted")
       return ()
 
-    safeOpenHandles' outPath errPath = do
-      out <- PS.openHandle "stdout" AppendMode outPath
-      err <- PS.openHandle "stderr" AppendMode errPath
-      return (convert' out, convert' err)
-
-      where
-        convert' handle = (case handle of Nothing -> Inherit; Just h -> UseHandle h)
+    convert' Nothing  = return Inherit
+    convert' (Just h) = return $ UseHandle h
 
 main :: IO ()
 main = do
@@ -280,17 +273,17 @@ main = do
       res <- S.clientPoll socket command
       case res of
         CommandOk -> do
-          putStrLn $ "gabriel: Ok"
+          putStrLn "gabriel: Ok"
           exitImmediately ExitSuccess
         CommandError msg -> do
-          putStrLn $ "gabriel: Error: " ++ msg
+          putStrLn ("gabriel: Error: " ++ msg)
           exitImmediately $ ExitFailure 1
 
     {-
      - either use existing arguments, or attempt to read from file.
      -}
     readArgs            :: [String] -> Maybe FilePath -> IO [String]
-    readArgs [] path    = PS.readCommand path >>= return
+    readArgs []   path  = U.getArray "command" path >>= return
     readArgs args path  = return args
 
     onJust                  :: (Monad m) => Maybe a -> (a -> m ()) -> m ()

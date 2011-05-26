@@ -124,9 +124,6 @@ options =
  , Option []     ["heartbeat-interval"]
      (ReqArg (\ f opts -> opts { heartBeatInt = read f }) "<seconds>")
      "Seconds in which to execute heartbeat check"
- , Option []     ["kill-pattern"]
-     (ReqArg (\ f opts -> opts { killPattern = Just $ parseKillPattern f }) "<pattern>")
-     "A wait-and-signal pattern, like HUP:10:KILL which will be used to terminate the process"
  , Option ['E'] []
      (ReqArg (\ f opts -> opts { optEnviron = updateEnviron (optEnviron opts) f }) "<name>=<value>")
      "Update environment variable (can be used multiple times)"

@@ -58,6 +58,17 @@ handlePacket pattern state packet = do
       let sig = U.readM name PS.NONE
       PS.signalProcess state [PS.SignalStep 0 sig]
       return CommandOk
+    h' (Puts str)  = do
+      mStdin <- PS.getStdin state
+      case mStdin of
+        Nothing     -> return $ CommandError "Stdin not registered for process"
+        Just stdIn  -> do
+          syslog Notice $ "Writing to stdin"
+          catch (do
+            hPutStrLn stdIn str
+            hFlush stdIn)
+            (\e -> syslog Error $ "Failed writing to stdin: " ++ (show e))
+          return CommandOk
     h' RestartCommand     = do
       PS.killProcess state pattern
       return CommandOk
@@ -186,9 +197,14 @@ mainloop state = do
   (Just s, _, _, p) <- createProcess cp
 
   PS.setHandle state p
+  PS.setStdin  state s
   exitCode <- waitForProcess p
-  hClose s
+  PS.clearStdin  state
   PS.clearHandle state
+
+  catch
+    (hClose s)
+    (\e -> syslog Error $ "Failed to close stdin: " ++ (show e))
 
   syslog Notice $ "Process exited with code " ++ (show exitCode)
 
@@ -243,6 +259,7 @@ main = do
   when (optKill opts)     $ handleCommandS KillCommand 
   when (optCheck opts)    $ handleCommandS CheckCommand
   onJust (optSig opts) (\sig -> handleCommandS $ SigCommand sig)
+  onJust (optPuts opts) (\string -> handleCommandS $ Puts string)
 
   args <- readArgs args (optCommand opts)
 

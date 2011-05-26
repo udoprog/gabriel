@@ -17,6 +17,7 @@ data Options = Options
  , optUpdate     :: Bool
  , optFg         :: Bool
  , optKill       :: Bool
+ , optPuts       :: Maybe String
  , optCheck      :: Bool
  , optRestart    :: Bool
  , optCwd        :: FilePath
@@ -42,6 +43,7 @@ defaultOptions wd = Options
  , optUpdate      = False
  , optFg          = False
  , optKill        = False
+ , optPuts        = Nothing
  , optCheck       = False
  , optRestart     = False
  , optCwd         = ""
@@ -113,6 +115,9 @@ options =
  , Option []     ["kill-pattern"]
      (ReqArg (\ f opts -> opts { killPattern = Just $ parseKillPattern f }) "<pattern>")
      "A wait-and-signal pattern, like HUP:10:KILL which will be used to terminate the process"
+ , Option [] ["puts"]
+     (ReqArg (\ f opts -> opts { optPuts = Just f }) "<string>")
+     "Write a <string> to stdin of the running process"
  , Option []     ["heartbeat"]
      (ReqArg (\ f opts -> opts { heartBeat = Just f }) "<command>")
      "Command to execute as heartbeat check, will be run by /bin/sh"
